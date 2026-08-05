@@ -14,7 +14,7 @@ authors = [
 ]
 dependencies = [
   "playwright>=1.45,<2",
-  "pypdf>=5,<6",
+  "pypdf>=5,<7",
   "requests>=2.32,<3"
 ]
 
