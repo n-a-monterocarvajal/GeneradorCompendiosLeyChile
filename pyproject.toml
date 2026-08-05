@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "generador-compendios-leychile"
+version = "0.1.0"
+description = "Genera compendios PDF y detecta nuevas versiones de normas en Ley Chile."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+authors = [
+  { name = "Nicolás Montero Carvajal" }
+]
+dependencies = [
+  "playwright>=1.45,<2",
+  "pypdf>=5,<6",
+  "requests>=2.32,<3"
+]
+
+[project.scripts]
+generar-compendio-leychile = "generador_compendios_leychile.cli:generar_main"
+revisar-versiones-leychile = "generador_compendios_leychile.cli:revisar_main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

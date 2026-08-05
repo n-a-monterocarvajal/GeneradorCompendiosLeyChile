@@ -1,2 +1,70 @@
 # GeneradorCompendiosLeyChile
-Motor reutilizable para descargar, versionar y generar compendios normativos desde Ley Chile/BCN.
+
+Motor reutilizable para descargar normas desde Ley Chile/BCN, unirlas en un PDF con marcadores y detectar nuevas versiones de las normas configuradas.
+
+Los repositorios de compendios particulares conservan únicamente su `fuentes.json`, sus workflows y una referencia fijada a una versión de este paquete. Las correcciones del obtenedor y del monitor de versiones se desarrollan y prueban aquí.
+
+## Instalación
+
+```bash
+python -m pip install .
+python -m playwright install --with-deps chromium
+```
+
+## Generar un compendio
+
+```bash
+generar-compendio-leychile --config app/fuentes.json
+```
+
+La configuración mantiene el contrato de los repositorios existentes:
+
+```json
+{
+  "titulo_compendio": "Compendio de ejemplo",
+  "salida_base": "CompendioEjemplo",
+  "bcn_navegador_visible": false,
+  "fuentes": [
+    {
+      "tipo": "bcn",
+      "id_norma": "1984",
+      "url": "https://www.bcn.cl/leychile/navegar?idNorma=1984",
+      "archivo": "codigo_penal",
+      "marcador": "Código Penal"
+    }
+  ]
+}
+```
+
+Opcionalmente se puede agregar:
+
+```json
+{
+  "descarga": {
+    "reintentos_por_norma": 3,
+    "reiniciar_contexto_cada": 6,
+    "espera_base_segundos": 4
+  }
+}
+```
+
+## Revisar versiones
+
+```bash
+revisar-versiones-leychile \
+  --config app/fuentes.json \
+  --estado .github/estado-versiones.json \
+  --cambios trabajo/cambios-versiones.json \
+  --resumen trabajo/cambios-versiones.md
+```
+
+El estado normaliza las vigencias informadas por Ley Chile, la vigencia actual, eventos pendientes y alertas de texto diferido. La primera ejecución crea una línea base sin solicitar un compendio. Ejecuciones posteriores reportan solo diferencias semánticas; cambios de orden o valores volátiles no disparan una publicación.
+
+## Desarrollo
+
+```bash
+python -m pip install -e .
+python -m unittest discover -s tests -v
+```
+
+Las decisiones y resguardos se documentan en [docs/decisiones-tecnicas.md](docs/decisiones-tecnicas.md). El código se publica bajo licencia MIT.
