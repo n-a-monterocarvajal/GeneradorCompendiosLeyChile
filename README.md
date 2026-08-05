@@ -67,4 +67,4 @@ python -m pip install -e .
 python -m unittest discover -s tests -v
 ```
 
-Las decisiones y resguardos se documentan en [docs/decisiones-tecnicas.md](docs/decisiones-tecnicas.md). El código se publica bajo licencia MIT.
+Las decisiones y resguardos se documentan en [docs/decisiones-tecnicas.md](docs/decisiones-tecnicas.md). El [plan de migración a repositorio privado](docs/plan-privatizacion.md) describe la autenticación, los controles contra filtraciones y el despliegue coordinado previstos. El código publicado actualmente está bajo licencia MIT.
