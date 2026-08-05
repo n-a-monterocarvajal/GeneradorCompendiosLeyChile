@@ -54,3 +54,11 @@ Los repositorios particulares dejan de generar mensualmente. Un workflow semanal
 ## 8. Trazabilidad con ConsultaNormasBCN
 
 Se reutilizaron, en modo de solo lectura, sus hallazgos sobre `get_norma_json`, `metadatos.vigencias`, alertas diferidas y la necesidad de sanear antes de comparar contenido. No se copiaron componentes WinUI ni se modificó aquel repositorio.
+
+## 9. Publicaciones verificables e inmutables
+
+Antes de publicar, cada repositorio particular valida el PDF completo, calcula su SHA-256, conserva el checksum como asset y solicita a GitHub una attestation vinculada al commit y al workflow run. La release se prepara como borrador y solo se publica después de superar todas esas barreras.
+
+Las releases futuras se configuran como inmutables. El tag y los assets publicados no se reemplazan ni eliminan; cualquier corrección produce una nueva release. Los borradores siguen siendo el área de preparación recuperable antes de la publicación.
+
+Esta decisión y las alternativas evaluadas se detallan en [analisis-trackerslist.md](analisis-trackerslist.md).
