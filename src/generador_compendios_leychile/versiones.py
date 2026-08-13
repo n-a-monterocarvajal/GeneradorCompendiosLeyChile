@@ -167,6 +167,94 @@ def _version_key(version: dict[str, Any]) -> str:
     return json.dumps(version, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+def _compare_versions(
+    old_values: Any,
+    new_values: Any,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Separa vigencias agregadas, eliminadas y actualizadas.
+
+    Primero descarta coincidencias exactas. Entre los registros restantes, ``desde``
+    actúa como identidad estable. Si Ley Chile entrega más de un registro con el
+    mismo inicio, los pares se eligen por menor cantidad de campos modificados y
+    luego por su representación canónica para mantener un resultado determinista.
+    """
+    old_versions = sorted(
+        (item for item in old_values or [] if isinstance(item, dict)),
+        key=_version_key,
+    )
+    new_versions = sorted(
+        (item for item in new_values or [] if isinstance(item, dict)),
+        key=_version_key,
+    )
+
+    old_exact: dict[str, list[dict[str, Any]]] = {}
+    for version in old_versions:
+        old_exact.setdefault(_version_key(version), []).append(version)
+
+    unmatched_new: list[dict[str, Any]] = []
+    for version in new_versions:
+        matches = old_exact.get(_version_key(version))
+        if matches:
+            matches.pop()
+        else:
+            unmatched_new.append(version)
+    unmatched_old = [version for matches in old_exact.values() for version in matches]
+
+    old_by_start: dict[str, list[dict[str, Any]]] = {}
+    new_by_start: dict[str, list[dict[str, Any]]] = {}
+    for version in unmatched_old:
+        start = _scalar(version.get("desde"))
+        if start:
+            old_by_start.setdefault(start, []).append(version)
+    for version in unmatched_new:
+        start = _scalar(version.get("desde"))
+        if start:
+            new_by_start.setdefault(start, []).append(version)
+
+    paired_old: set[int] = set()
+    paired_new: set[int] = set()
+    updated: list[dict[str, Any]] = []
+    fields = ("desde", "hasta", "tipo", "descripcion")
+    for start in sorted(set(old_by_start) & set(new_by_start)):
+        candidates = []
+        for old in old_by_start[start]:
+            for new in new_by_start[start]:
+                changed_fields = [field for field in fields if old.get(field) != new.get(field)]
+                candidates.append((
+                    len(changed_fields),
+                    _version_key(old),
+                    _version_key(new),
+                    old,
+                    new,
+                    changed_fields,
+                ))
+        for _, _, _, old, new, changed_fields in sorted(candidates, key=lambda item: item[:3]):
+            if id(old) in paired_old or id(new) in paired_new:
+                continue
+            paired_old.add(id(old))
+            paired_new.add(id(new))
+            updated.append({
+                "antes": old,
+                "despues": new,
+                "campos_modificados": changed_fields,
+            })
+
+    added = sorted(
+        (version for version in unmatched_new if id(version) not in paired_new),
+        key=_version_key,
+    )
+    removed = sorted(
+        (version for version in unmatched_old if id(version) not in paired_old),
+        key=_version_key,
+    )
+    updated.sort(key=lambda item: (
+        _scalar(item["despues"].get("desde")),
+        _version_key(item["antes"]),
+        _version_key(item["despues"]),
+    ))
+    return added, removed, updated
+
+
 def compare_states(previous: dict[str, Any], current: dict[str, Any]) -> list[dict[str, Any]]:
     changes: list[dict[str, Any]] = []
     old_sources = previous.get("fuentes") if isinstance(previous.get("fuentes"), dict) else {}
@@ -185,14 +273,16 @@ def compare_states(previous: dict[str, Any], current: dict[str, Any]) -> list[di
             continue
 
         details: dict[str, Any] = {}
-        old_versions = {_version_key(item): item for item in old.get("vigencias", [])}
-        new_versions = {_version_key(item): item for item in new.get("vigencias", [])}
-        added = [new_versions[key] for key in sorted(set(new_versions) - set(old_versions))]
-        removed = [old_versions[key] for key in sorted(set(old_versions) - set(new_versions))]
+        added, removed, updated = _compare_versions(
+            old.get("vigencias", []),
+            new.get("vigencias", []),
+        )
         if added:
             details["vigencias_agregadas"] = added
         if removed:
             details["vigencias_eliminadas"] = removed
+        if updated:
+            details["vigencias_actualizadas"] = updated
         for key, label in (
             ("vigencia_actual", "vigencia_actual"),
             ("diferido", "diferido"),
@@ -248,6 +338,18 @@ def format_summary(result: ReviewResult) -> str:
             if version.get("hasta"):
                 period += f" hasta {version['hasta']}"
             lines.append(f"  - Nueva vigencia: {label}, {period}.")
+        for update in details.get("vigencias_actualizadas", []):
+            before = update.get("antes") or {}
+            after = update.get("despues") or {}
+            before_label = before.get("descripcion") or before.get("tipo") or "sin etiqueta"
+            after_label = after.get("descripcion") or after.get("tipo") or "sin etiqueta"
+            period = f"desde {after.get('desde') or '?'}"
+            if after.get("hasta"):
+                period += f" hasta {after['hasta']}"
+            lines.append(
+                f"  - Vigencia actualizada/reclasificada: {after_label}, {period} "
+                f"(antes: {before_label})."
+            )
         if "vigencia_actual" in details:
             after = details["vigencia_actual"]["despues"] or {}
             lines.append(

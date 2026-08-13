@@ -57,6 +57,89 @@ class VersionTests(unittest.TestCase):
         self.assertEqual(1, len(changes))
         self.assertEqual("2026-08-12", changes[0]["detalles"]["vigencias_agregadas"][0]["desde"])
 
+    def test_august_12_reclassifications_are_updates_not_new_versions(self):
+        old_versions = [
+            {
+                "desde": "2025-01-01", "hasta": "2026-08-11", "tipo_version": "2",
+                "tipo_version_s": "Última Versión",
+            },
+            {
+                "desde": "2026-08-12", "hasta": "", "tipo_version": "7",
+                "tipo_version_s": "Con Vigencia Diferida por Fecha",
+            },
+        ]
+        new_versions = [
+            {
+                "desde": "2025-01-01", "hasta": "2026-08-11", "tipo_version": "1",
+                "tipo_version_s": "Intermedio",
+            },
+            {
+                "desde": "2026-08-12", "hasta": "", "tipo_version": "2",
+                "tipo_version_s": "Última Versión",
+            },
+        ]
+        old_source = normalize_snapshot("1984", "Código Penal", payload(versions=old_versions))
+        new_source = normalize_snapshot("1984", "Código Penal", payload(versions=new_versions))
+
+        changes = compare_states(
+            {"fuentes": {"1984": old_source}},
+            {"fuentes": {"1984": new_source}},
+        )
+
+        self.assertEqual("version_actualizada", changes[0]["tipo"])
+        details = changes[0]["detalles"]
+        self.assertNotIn("vigencias_agregadas", details)
+        self.assertNotIn("vigencias_eliminadas", details)
+        self.assertEqual(2, len(details["vigencias_actualizadas"]))
+        self.assertEqual(
+            ["Última Versión", "Con Vigencia Diferida por Fecha"],
+            [item["antes"]["descripcion"] for item in details["vigencias_actualizadas"]],
+        )
+        self.assertEqual(
+            ["Intermedio", "Última Versión"],
+            [item["despues"]["descripcion"] for item in details["vigencias_actualizadas"]],
+        )
+
+        from generador_compendios_leychile.versiones import ReviewResult
+        summary = format_summary(ReviewResult(False, True, changes, {}))
+        self.assertEqual(2, summary.count("Vigencia actualizada/reclasificada"))
+        self.assertNotIn("Nueva vigencia", summary)
+
+        serialized = json.loads(json.dumps({"cambios": changes}, ensure_ascii=False))
+        self.assertEqual("version_actualizada", serialized["cambios"][0]["tipo"])
+        self.assertIn("vigencias_actualizadas", serialized["cambios"][0]["detalles"])
+
+    def test_same_start_collisions_preserve_exact_matches(self):
+        old_versions = [
+            {
+                "desde": "2026-08-12", "hasta": "", "tipo_version": "2",
+                "tipo_version_s": "Última Versión",
+            },
+            {
+                "desde": "2026-08-12", "hasta": "2026-08-12", "tipo_version": "7",
+                "tipo_version_s": "Diferida",
+            },
+        ]
+        new_versions = [
+            old_versions[0],
+            {
+                "desde": "2026-08-12", "hasta": "2026-08-13", "tipo_version": "7",
+                "tipo_version_s": "Diferida actualizada",
+            },
+        ]
+        old_source = normalize_snapshot("1984", "Código Penal", payload(versions=old_versions))
+        new_source = normalize_snapshot("1984", "Código Penal", payload(versions=new_versions))
+
+        details = compare_states(
+            {"fuentes": {"1984": old_source}},
+            {"fuentes": {"1984": new_source}},
+        )[0]["detalles"]
+
+        self.assertEqual(1, len(details["vigencias_actualizadas"]))
+        update = details["vigencias_actualizadas"][0]
+        self.assertEqual("Diferida", update["antes"]["descripcion"])
+        self.assertEqual(["hasta", "descripcion"], update["campos_modificados"])
+
     def test_deferred_change_is_reported(self):
         old_source = normalize_snapshot("1984", "Código Penal", payload(deferred=False))
         new_source = normalize_snapshot("1984", "Código Penal", payload(deferred=True))
