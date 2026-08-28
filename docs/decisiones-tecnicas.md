@@ -41,6 +41,16 @@ No se compara HTML crudo: `ConsultaNormasBCN` demostró que contiene notas edito
 
 Si una fuente no puede revisarse después de los reintentos, la ejecución falla y no reemplaza el estado anterior. La ausencia temporal de datos nunca se interpreta como una actualización.
 
+### 5.1 Reclasificaciones de vigencias históricas
+
+Ley Chile corrige de tanto en tanto los límites de fecha entre versiones ya superadas. El 27 de agosto de 2026 movió el corte entre dos vigencias de 1991 del Decreto N.º 55, de 1977 (`idNorma=8355`); no hubo decreto modificatorio y el texto descargado resultó idéntico salvo el sello de exportación que BCN estampa en cada página. Regenerar el compendio por ese ajuste sólo agrega ruido al historial de releases.
+
+Cada cambio se clasifica entonces como significativo o informativo. Es significativo cuando afecta lo que se descarga hoy: cambia `vigencia_actual`, aparece o desaparece una vigencia, cambian los eventos pendientes o la alerta de texto diferido, cambian `fecha_version` o `fecha_actualizacion_texto`, o el cambio de huella no puede explicarse con las señales anteriores. Es informativo cuando sólo se corrieron fechas de vigencias cuyo término ya pasó y que no comparten inicio con la vigencia actual.
+
+Un cambio informativo se guarda en `estado-versiones.json` —para conservar la trazabilidad y no volver a reportarlo— y se describe en el resumen bajo un título propio, pero deja `changes_detected=false` y no despacha `generar-compendio.yml`. Ante cualquier duda se responde «significativo»: una vigencia sin término, con fecha ilegible, futura o que comparte inicio con la vigencia actual se trata como vigente.
+
+Distinguir un corrimiento de límite de una vigencia realmente nueva exige emparejar bien los registros. Cuando BCN mueve el corte entre dos tramos contiguos, el primero conserva su inicio y el segundo su término, de modo que las vigencias pendientes se emparejan primero por `desde` y después por `hasta`. Sin la segunda pasada, el corrimiento aparecía como la desaparición de un tramo y la aparición de otro, es decir, como una condición que sí publica.
+
 ## 6. Diferidos
 
 Para decidir si existe texto diferido se usa la alerta estructurada `clase=diferido`. La versión especial `idVersion=Diferido` es útil para localizar partes modificadas mediante texto previamente saneado, como documenta e implementa `ConsultaNormasBCN`, pero no es necesaria para decidir si debe regenerarse el compendio: los cambios del inventario de vigencias o de la alerta ya activan la revisión.
@@ -49,7 +59,7 @@ Se evita parsear el mensaje humano de la alerta como fuente de verdad. Su texto 
 
 ## 7. Publicaciones motivadas por cambios
 
-Los repositorios particulares dejan de generar mensualmente. Un workflow semanal revisa versiones y, solo ante cambios, actualiza el estado persistente y despacha una ejecución separada del generador. Las notas del release enumeran las normas y señales modificadas. La generación manual continúa disponible.
+Los repositorios particulares dejan de generar mensualmente. Un workflow semanal revisa versiones y, solo ante cambios significativos, despacha una ejecución separada del generador. El estado persistente se actualiza también cuando el único cambio es informativo, de modo que la revisión siguiente no vuelva a reportarlo: el workflow decide con `state_updated` si debe versionar el estado y con `changes_detected` si debe publicar. Las notas del release enumeran las normas y señales modificadas. La generación manual continúa disponible.
 
 ## 8. Trazabilidad con ConsultaNormasBCN
 
