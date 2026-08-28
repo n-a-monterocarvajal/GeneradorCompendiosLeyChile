@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -34,28 +35,51 @@ jobs:
       - name: Ejecutar pruebas
         run: python -m unittest discover -s tests -v
 
-      - name: Comprobar que el tag coincide con la versión declarada
+      - name: Determinar la versión publicada
         id: version
         run: |
           set -euo pipefail
           version=$(python -c "import generador_compendios_leychile as paquete; print(paquete.__version__)")
-          if [ "v${version}" != "$GITHUB_REF_NAME" ]; then
+          tag="v${version}"
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$GITHUB_REF_NAME" != "$tag" ]; then
             echo "El tag $GITHUB_REF_NAME no coincide con la versión ${version} del paquete." >&2
             exit 1
           fi
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=${version}"
+            echo "tag=${tag}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Reunir las notas de la release
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          : > notas.md
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            git tag -l --format='%(contents)' "$TAG" > notas.md
+          fi
+          if [ ! -s notas.md ] && [ -f "docs/notas-release/${TAG}.md" ]; then
+            cp "docs/notas-release/${TAG}.md" notas.md
+          fi
+          if [ ! -s notas.md ]; then
+            echo "Publicación de la versión ${VERSION} del motor de compendios." > notas.md
+          fi
 
       - name: Publicar release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          git tag -l --format='%(contents)' "$GITHUB_REF_NAME" > notas.md
-          if [ ! -s notas.md ]; then
-            echo "Publicación de la versión ${VERSION} del motor de compendios." > notas.md
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "La release $TAG ya existe; no se reemplaza." >&2
+            exit 1
           fi
-          gh release create "$GITHUB_REF_NAME" \
+          gh release create "$TAG" \
+            --target "$GITHUB_SHA" \
             --title "GeneradorCompendiosLeyChile ${VERSION}" \
             --notes-file notas.md \
             --latest
