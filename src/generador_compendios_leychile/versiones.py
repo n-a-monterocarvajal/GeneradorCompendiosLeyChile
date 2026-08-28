@@ -6,7 +6,7 @@ import os
 import random
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -15,6 +15,8 @@ import requests
 from .generador import HEADERS
 
 STATE_SCHEMA_VERSION = 1
+RELEVANCIA_SIGNIFICATIVA = "significativa"
+RELEVANCIA_INFORMATIVA = "informativa"
 JSON_URL = (
     "https://nuevo.leychile.cl/servicios/Navegar/get_norma_json"
     "?idNorma={id_norma}&idVersion=&idLey=&tipoVersion=&cve=&agrupa_partes=1&r={cache_buster}"
@@ -27,6 +29,27 @@ class ReviewResult:
     changes_detected: bool
     changes: list[dict[str, Any]]
     state: dict[str, Any]
+
+    @property
+    def significant_changes(self) -> list[dict[str, Any]]:
+        """Cambios que justifican regenerar y publicar el compendio."""
+        return [
+            change for change in self.changes
+            if change.get("relevancia", RELEVANCIA_SIGNIFICATIVA) != RELEVANCIA_INFORMATIVA
+        ]
+
+    @property
+    def informational_changes(self) -> list[dict[str, Any]]:
+        """Cambios registrados por trazabilidad que no alteran el texto vigente."""
+        return [
+            change for change in self.changes
+            if change.get("relevancia") == RELEVANCIA_INFORMATIVA
+        ]
+
+    @property
+    def state_updated(self) -> bool:
+        """El estado persistente debe reescribirse, aunque no se publique nada."""
+        return self.baseline_created or bool(self.changes)
 
 
 def _scalar(value: Any) -> str:
@@ -163,8 +186,121 @@ def build_state(
     }
 
 
+def _parse_date(value: Any) -> date | None:
+    try:
+        return date.fromisoformat(_scalar(value)[:10])
+    except ValueError:
+        return None
+
+
+def _is_historical(version: Any, current_start: str, today: date) -> bool:
+    """Indica si una vigencia corresponde a un período ya cerrado.
+
+    Ante cualquier duda se responde ``False``: una vigencia sin término, con fecha
+    ilegible o que comparte inicio con la vigencia actual se trata como vigente.
+    """
+    if not isinstance(version, dict):
+        return False
+    start = _scalar(version.get("desde"))
+    if not start or start == current_start:
+        return False
+    end = _parse_date(version.get("hasta"))
+    return end is not None and end < today
+
+
+_SIGNIFICANT_DETAIL_KEYS = (
+    "vigencias_agregadas",
+    "vigencias_eliminadas",
+    "vigencia_actual",
+    "diferido",
+    "eventos_pendientes",
+    "fecha_version",
+    "fecha_actualizacion_texto",
+    "metadatos",
+)
+
+
+def classify_relevance(details: dict[str, Any], current: Any, today: date) -> str:
+    """Distingue cambios que afectan el texto vigente de reclasificaciones históricas.
+
+    Ley Chile corrige con cierta frecuencia los límites de fecha entre versiones ya
+    superadas. Ese ajuste no altera el texto que se descarga hoy, de modo que se
+    registra en el estado pero no justifica regenerar el compendio.
+    """
+    if any(key in details for key in _SIGNIFICANT_DETAIL_KEYS):
+        return RELEVANCIA_SIGNIFICATIVA
+    updated = details.get("vigencias_actualizadas") or []
+    if not updated:
+        return RELEVANCIA_SIGNIFICATIVA
+    current_start = _scalar(current.get("desde")) if isinstance(current, dict) else ""
+    if not current_start:
+        return RELEVANCIA_SIGNIFICATIVA
+    for update in updated:
+        if not _is_historical(update.get("antes"), current_start, today):
+            return RELEVANCIA_SIGNIFICATIVA
+        if not _is_historical(update.get("despues"), current_start, today):
+            return RELEVANCIA_SIGNIFICATIVA
+    return RELEVANCIA_INFORMATIVA
+
+
 def _version_key(version: dict[str, Any]) -> str:
     return json.dumps(version, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _pair_versions(
+    key: str,
+    old_versions: list[dict[str, Any]],
+    new_versions: list[dict[str, Any]],
+    paired_old: set[int],
+    paired_new: set[int],
+    updated: list[dict[str, Any]],
+    allow_empty: bool = False,
+) -> None:
+    """Empareja los registros pendientes usando ``key`` como identidad estable.
+
+    Si Ley Chile entrega más de un registro con el mismo valor, los pares se eligen
+    por menor cantidad de campos modificados y luego por su representación canónica
+    para mantener un resultado determinista.
+    """
+    fields = ("desde", "hasta", "tipo", "descripcion")
+    old_by_key: dict[str, list[dict[str, Any]]] = {}
+    new_by_key: dict[str, list[dict[str, Any]]] = {}
+    for version in old_versions:
+        if id(version) in paired_old:
+            continue
+        value = _scalar(version.get(key))
+        if value or allow_empty:
+            old_by_key.setdefault(value, []).append(version)
+    for version in new_versions:
+        if id(version) in paired_new:
+            continue
+        value = _scalar(version.get(key))
+        if value or allow_empty:
+            new_by_key.setdefault(value, []).append(version)
+
+    for value in sorted(set(old_by_key) & set(new_by_key)):
+        candidates = []
+        for old in old_by_key[value]:
+            for new in new_by_key[value]:
+                changed_fields = [field for field in fields if old.get(field) != new.get(field)]
+                candidates.append((
+                    len(changed_fields),
+                    _version_key(old),
+                    _version_key(new),
+                    old,
+                    new,
+                    changed_fields,
+                ))
+        for _, _, _, old, new, changed_fields in sorted(candidates, key=lambda item: item[:3]):
+            if id(old) in paired_old or id(new) in paired_new:
+                continue
+            paired_old.add(id(old))
+            paired_new.add(id(new))
+            updated.append({
+                "antes": old,
+                "despues": new,
+                "campos_modificados": changed_fields,
+            })
 
 
 def _compare_versions(
@@ -173,10 +309,11 @@ def _compare_versions(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     """Separa vigencias agregadas, eliminadas y actualizadas.
 
-    Primero descarta coincidencias exactas. Entre los registros restantes, ``desde``
-    actúa como identidad estable. Si Ley Chile entrega más de un registro con el
-    mismo inicio, los pares se eligen por menor cantidad de campos modificados y
-    luego por su representación canónica para mantener un resultado determinista.
+    Primero descarta coincidencias exactas. Entre los registros restantes se empareja
+    primero por ``desde`` y después por ``hasta``: cuando Ley Chile corre el límite
+    entre dos vigencias contiguas, la primera conserva su inicio y la segunda su
+    término, de modo que ambas se reconocen como actualizaciones del mismo tramo y
+    no como la desaparición y aparición de vigencias distintas.
     """
     old_versions = sorted(
         (item for item in old_values or [] if isinstance(item, dict)),
@@ -200,44 +337,13 @@ def _compare_versions(
             unmatched_new.append(version)
     unmatched_old = [version for matches in old_exact.values() for version in matches]
 
-    old_by_start: dict[str, list[dict[str, Any]]] = {}
-    new_by_start: dict[str, list[dict[str, Any]]] = {}
-    for version in unmatched_old:
-        start = _scalar(version.get("desde"))
-        if start:
-            old_by_start.setdefault(start, []).append(version)
-    for version in unmatched_new:
-        start = _scalar(version.get("desde"))
-        if start:
-            new_by_start.setdefault(start, []).append(version)
-
     paired_old: set[int] = set()
     paired_new: set[int] = set()
     updated: list[dict[str, Any]] = []
-    fields = ("desde", "hasta", "tipo", "descripcion")
-    for start in sorted(set(old_by_start) & set(new_by_start)):
-        candidates = []
-        for old in old_by_start[start]:
-            for new in new_by_start[start]:
-                changed_fields = [field for field in fields if old.get(field) != new.get(field)]
-                candidates.append((
-                    len(changed_fields),
-                    _version_key(old),
-                    _version_key(new),
-                    old,
-                    new,
-                    changed_fields,
-                ))
-        for _, _, _, old, new, changed_fields in sorted(candidates, key=lambda item: item[:3]):
-            if id(old) in paired_old or id(new) in paired_new:
-                continue
-            paired_old.add(id(old))
-            paired_new.add(id(new))
-            updated.append({
-                "antes": old,
-                "despues": new,
-                "campos_modificados": changed_fields,
-            })
+    _pair_versions("desde", unmatched_old, unmatched_new, paired_old, paired_new, updated)
+    _pair_versions(
+        "hasta", unmatched_old, unmatched_new, paired_old, paired_new, updated, allow_empty=True
+    )
 
     added = sorted(
         (version for version in unmatched_new if id(version) not in paired_new),
@@ -255,8 +361,13 @@ def _compare_versions(
     return added, removed, updated
 
 
-def compare_states(previous: dict[str, Any], current: dict[str, Any]) -> list[dict[str, Any]]:
+def compare_states(
+    previous: dict[str, Any],
+    current: dict[str, Any],
+    today: date | None = None,
+) -> list[dict[str, Any]]:
     changes: list[dict[str, Any]] = []
+    reference_day = today or datetime.now(timezone.utc).date()
     old_sources = previous.get("fuentes") if isinstance(previous.get("fuentes"), dict) else {}
     new_sources = current.get("fuentes") if isinstance(current.get("fuentes"), dict) else {}
 
@@ -264,10 +375,20 @@ def compare_states(previous: dict[str, Any], current: dict[str, Any]) -> list[di
         old = old_sources.get(id_norma)
         new = new_sources.get(id_norma)
         if old is None:
-            changes.append({"id_norma": id_norma, "marcador": new.get("marcador", ""), "tipo": "fuente_agregada"})
+            changes.append({
+                "id_norma": id_norma,
+                "marcador": new.get("marcador", ""),
+                "tipo": "fuente_agregada",
+                "relevancia": RELEVANCIA_SIGNIFICATIVA,
+            })
             continue
         if new is None:
-            changes.append({"id_norma": id_norma, "marcador": old.get("marcador", ""), "tipo": "fuente_eliminada"})
+            changes.append({
+                "id_norma": id_norma,
+                "marcador": old.get("marcador", ""),
+                "tipo": "fuente_eliminada",
+                "relevancia": RELEVANCIA_SIGNIFICATIVA,
+            })
             continue
         if old.get("huella") == new.get("huella"):
             continue
@@ -298,6 +419,7 @@ def compare_states(previous: dict[str, Any], current: dict[str, Any]) -> list[di
             "id_norma": id_norma,
             "marcador": new.get("marcador") or old.get("marcador") or "",
             "tipo": "version_actualizada",
+            "relevancia": classify_relevance(details, new.get("vigencia_actual"), reference_day),
             "detalles": details,
         })
     return changes
@@ -316,51 +438,78 @@ def review_versions(
     if previous.get("schema_version") != STATE_SCHEMA_VERSION:
         raise ValueError("La versión del esquema de estado no es compatible.")
     changes = compare_states(previous, current)
-    return ReviewResult(False, bool(changes), changes, current)
+    significant = any(
+        change.get("relevancia", RELEVANCIA_SIGNIFICATIVA) != RELEVANCIA_INFORMATIVA
+        for change in changes
+    )
+    return ReviewResult(False, significant, changes, current)
+
+
+def _format_change(change: dict[str, Any]) -> list[str]:
+    marker = change.get("marcador") or "Norma sin título"
+    id_norma = change["id_norma"]
+    change_type = change["tipo"]
+    lines = [f"- **{marker}** (`idNorma={id_norma}`): {change_type.replace('_', ' ')}."]
+    details = change.get("detalles", {})
+    for version in details.get("vigencias_agregadas", []):
+        label = version.get("descripcion") or version.get("tipo") or "versión"
+        period = f"desde {version.get('desde') or '?'}"
+        if version.get("hasta"):
+            period += f" hasta {version['hasta']}"
+        lines.append(f"  - Nueva vigencia: {label}, {period}.")
+    for update in details.get("vigencias_actualizadas", []):
+        before = update.get("antes") or {}
+        after = update.get("despues") or {}
+        before_label = before.get("descripcion") or before.get("tipo") or "sin etiqueta"
+        after_label = after.get("descripcion") or after.get("tipo") or "sin etiqueta"
+        period = f"desde {after.get('desde') or '?'}"
+        if after.get("hasta"):
+            period += f" hasta {after['hasta']}"
+        lines.append(
+            f"  - Vigencia actualizada/reclasificada: {after_label}, {period} "
+            f"(antes: {before_label})."
+        )
+    if "vigencia_actual" in details:
+        after = details["vigencia_actual"]["despues"] or {}
+        lines.append(
+            f"  - Vigencia actual: {after.get('descripcion') or after.get('tipo') or 'sin etiqueta'}, "
+            f"desde {after.get('desde') or '?'} hasta {after.get('hasta') or 'sin término'}.")
+    if "diferido" in details:
+        present = bool((details["diferido"]["despues"] or {}).get("presente"))
+        lines.append(f"  - Texto diferido: {'presente' if present else 'ya no informado'}.")
+    if "eventos_pendientes" in details:
+        lines.append("  - Cambiaron los eventos pendientes informados por Ley Chile.")
+    return lines
 
 
 def format_summary(result: ReviewResult) -> str:
     if result.baseline_created:
         return "Línea base de versiones creada; no se genera un compendio en esta primera revisión.\n"
-    if not result.changes_detected:
+
+    significant = result.significant_changes
+    informational = result.informational_changes
+    if not significant and not informational:
         return "No se detectaron nuevas versiones ni cambios de vigencia o texto diferido.\n"
 
-    lines = ["## Actualizaciones de normas detectadas", ""]
-    for change in result.changes:
-        marker = change.get("marcador") or "Norma sin título"
-        id_norma = change["id_norma"]
-        change_type = change["tipo"]
-        lines.append(f"- **{marker}** (`idNorma={id_norma}`): {change_type.replace('_', ' ')}.")
-        details = change.get("detalles", {})
-        for version in details.get("vigencias_agregadas", []):
-            label = version.get("descripcion") or version.get("tipo") or "versión"
-            period = f"desde {version.get('desde') or '?'}"
-            if version.get("hasta"):
-                period += f" hasta {version['hasta']}"
-            lines.append(f"  - Nueva vigencia: {label}, {period}.")
-        for update in details.get("vigencias_actualizadas", []):
-            before = update.get("antes") or {}
-            after = update.get("despues") or {}
-            before_label = before.get("descripcion") or before.get("tipo") or "sin etiqueta"
-            after_label = after.get("descripcion") or after.get("tipo") or "sin etiqueta"
-            period = f"desde {after.get('desde') or '?'}"
-            if after.get("hasta"):
-                period += f" hasta {after['hasta']}"
-            lines.append(
-                f"  - Vigencia actualizada/reclasificada: {after_label}, {period} "
-                f"(antes: {before_label})."
-            )
-        if "vigencia_actual" in details:
-            after = details["vigencia_actual"]["despues"] or {}
-            lines.append(
-                f"  - Vigencia actual: {after.get('descripcion') or after.get('tipo') or 'sin etiqueta'}, "
-                f"desde {after.get('desde') or '?'} hasta {after.get('hasta') or 'sin término'}.")
-        if "diferido" in details:
-            present = bool((details["diferido"]["despues"] or {}).get("presente"))
-            lines.append(f"  - Texto diferido: {'presente' if present else 'ya no informado'}.")
-        if "eventos_pendientes" in details:
-            lines.append("  - Cambiaron los eventos pendientes informados por Ley Chile.")
-    return "\n".join(lines) + "\n"
+    blocks: list[str] = []
+    if significant:
+        lines = ["## Actualizaciones de normas detectadas", ""]
+        for change in significant:
+            lines.extend(_format_change(change))
+        blocks.append("\n".join(lines))
+    if informational:
+        lines = [
+            "## Cambios registrados sin efecto sobre el texto vigente",
+            "",
+            "Ley Chile ajustó los límites de fecha de vigencias ya históricas. El estado se "
+            "actualiza para conservar la trazabilidad, pero no se solicita un nuevo compendio "
+            "porque el texto vigente no cambió.",
+            "",
+        ]
+        for change in informational:
+            lines.extend(_format_change(change))
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks) + "\n"
 
 
 def write_json_atomic(path: Path, value: Any) -> None:
@@ -370,10 +519,16 @@ def write_json_atomic(path: Path, value: Any) -> None:
     temporary.replace(path)
 
 
-def write_github_output(changes_detected: bool, baseline_created: bool) -> None:
+def write_github_output(result: ReviewResult) -> None:
     output_path = os.environ.get("GITHUB_OUTPUT")
     if not output_path:
         return
+    flags = {
+        "changes_detected": result.changes_detected,
+        "baseline_created": result.baseline_created,
+        "informational_changes": bool(result.informational_changes),
+        "state_updated": result.state_updated,
+    }
     with Path(output_path).open("a", encoding="utf-8") as handle:
-        handle.write(f"changes_detected={'true' if changes_detected else 'false'}\n")
-        handle.write(f"baseline_created={'true' if baseline_created else 'false'}\n")
+        for name, value in flags.items():
+            handle.write(f"{name}={'true' if value else 'false'}\n")

@@ -39,13 +39,19 @@ def revisar_main() -> int:
     config = read_config(Path(args.config))
     state_path = Path(args.estado)
     result = review_versions(config, state_path)
-    if result.baseline_created or result.changes_detected:
+    if result.state_updated:
         write_json_atomic(state_path, result.state)
-    write_json_atomic(Path(args.cambios), {"cambios": result.changes})
+    write_json_atomic(Path(args.cambios), {
+        "cambios": result.changes,
+        "totales": {
+            "significativos": len(result.significant_changes),
+            "informativos": len(result.informational_changes),
+        },
+    })
     summary = format_summary(result)
     summary_path = Path(args.resumen)
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     summary_path.write_text(summary, encoding="utf-8")
-    write_github_output(result.changes_detected, result.baseline_created)
+    write_github_output(result)
     print(summary, end="")
     return 0
