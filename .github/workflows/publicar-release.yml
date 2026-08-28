@@ -1,0 +1,61 @@
+name: Publicar release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publicar-release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  publicar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Obtener repositorio
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Preparar Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Instalar paquete
+        run: python -m pip install -e .
+
+      - name: Ejecutar pruebas
+        run: python -m unittest discover -s tests -v
+
+      - name: Comprobar que el tag coincide con la versión declarada
+        id: version
+        run: |
+          set -euo pipefail
+          version=$(python -c "import generador_compendios_leychile as paquete; print(paquete.__version__)")
+          if [ "v${version}" != "$GITHUB_REF_NAME" ]; then
+            echo "El tag $GITHUB_REF_NAME no coincide con la versión ${version} del paquete." >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Publicar release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          git tag -l --format='%(contents)' "$GITHUB_REF_NAME" > notas.md
+          if [ ! -s notas.md ]; then
+            echo "Publicación de la versión ${VERSION} del motor de compendios." > notas.md
+          fi
+          gh release create "$GITHUB_REF_NAME" \
+            --title "GeneradorCompendiosLeyChile ${VERSION}" \
+            --notes-file notas.md \
+            --latest
