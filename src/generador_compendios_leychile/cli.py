@@ -6,7 +6,13 @@ from pathlib import Path
 
 from .config import read_config
 from .generador import CompendiumGenerator
-from .versiones import format_summary, review_versions, write_github_output, write_json_atomic
+from .versiones import (
+    format_summary,
+    review_versions,
+    write_failure_output,
+    write_github_output,
+    write_json_atomic,
+)
 
 
 def generar_main() -> int:
@@ -38,7 +44,11 @@ def revisar_main() -> int:
 
     config = read_config(Path(args.config))
     state_path = Path(args.estado)
-    result = review_versions(config, state_path)
+    try:
+        result = review_versions(config, state_path)
+    except Exception as error:
+        write_failure_output(error)
+        raise
     if result.state_updated:
         write_json_atomic(state_path, result.state)
     write_json_atomic(Path(args.cambios), {

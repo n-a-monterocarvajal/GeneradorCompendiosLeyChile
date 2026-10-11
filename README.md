@@ -69,6 +69,8 @@ Los cambios se clasifican además por relevancia. Cuando Ley Chile sólo corrige
 | `state_updated` | El archivo de estado cambió y debe versionarse. |
 | `baseline_created` | Se creó la línea base en esta primera revisión. |
 
+Si la revisión falla, publica además `tipo_falla` antes de terminar con error: `transitoria` cuando Ley Chile no respondió (timeout, conexión, HTTP 429 o 5xx), `formato` cuando respondió con algo que la revisión no sabe leer (HTML en vez de JSON, HTTP 4xx o metadatos sin título, tipo de versión, fecha de versión, vigencia actual o vigencias) y `error` ante cualquier otra falla. Los workflows usan esta señal para avisar por issue todo lo que no sea transitorio.
+
 ## Desarrollo
 
 ```bash
