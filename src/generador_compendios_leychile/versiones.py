@@ -131,6 +131,53 @@ def normalize_snapshot(id_norma: str, marker: str, payload: dict[str, Any]) -> d
     return stable
 
 
+class RevisionFallida(RuntimeError):
+    """No fue posible revisar una norma después de agotar los intentos."""
+
+    tipo = "error"
+
+
+class FallaTransitoriaLeyChile(RevisionFallida):
+    """Ley Chile no respondió: timeout, conexión, HTTP 429 o 5xx. Se espera que pase sola."""
+
+    tipo = "transitoria"
+
+
+class FormatoInesperadoLeyChile(RevisionFallida):
+    """Ley Chile respondió, pero no con la forma que la revisión sabe leer."""
+
+    tipo = "formato"
+
+
+# Señales que todas las normas de los compendios informan hoy. Si alguna falta, la
+# respuesta cambió de forma y la huella dejaría de ser comparable con la anterior: se
+# trata como falla de lectura en vez de reportarla como una actualización normativa.
+_REQUIRED_METADATA = ("titulo_norma", "tipo_version", "fecha_version")
+
+
+def _validate_payload(payload: Any) -> None:
+    if not isinstance(payload, dict) or not isinstance(payload.get("metadatos"), dict):
+        raise ValueError("Ley Chile respondió sin metadatos de norma.")
+    metadata = payload["metadatos"]
+    missing = [key for key in _REQUIRED_METADATA if not _scalar(metadata.get(key))]
+    current = _normalize_version(metadata.get("vigencia"))
+    if current is None or not current["desde"]:
+        missing.append("vigencia")
+    versions = metadata.get("vigencias")
+    if not isinstance(versions, list) or not any(_normalize_version(item) for item in versions):
+        missing.append("vigencias")
+    if missing:
+        raise ValueError(f"Ley Chile respondió sin {', '.join(missing)} en los metadatos.")
+
+
+def _is_transient(error: Exception) -> bool:
+    if isinstance(error, (requests.ConnectionError, requests.Timeout)):
+        return True
+    if isinstance(error, requests.HTTPError) and error.response is not None:
+        return error.response.status_code == 429 or error.response.status_code >= 500
+    return False
+
+
 def fetch_snapshot(
     session: requests.Session,
     id_norma: str,
@@ -148,14 +195,14 @@ def fetch_snapshot(
                 raise requests.HTTPError(f"Respuesta transitoria HTTP {response.status_code}", response=response)
             response.raise_for_status()
             payload = response.json()
-            if not isinstance(payload, dict) or not isinstance(payload.get("metadatos"), dict):
-                raise ValueError("Ley Chile respondió sin metadatos de norma.")
+            _validate_payload(payload)
             return normalize_snapshot(id_norma, marker, payload)
         except (requests.RequestException, ValueError, json.JSONDecodeError) as error:
             last_error = error
             if attempt < attempts:
                 time.sleep(min(20.0, base_wait * (2 ** (attempt - 1)) + random.uniform(0, 1)))
-    raise RuntimeError(f"No fue posible revisar idNorma={id_norma} después de {attempts} intentos.") from last_error
+    failure = FallaTransitoriaLeyChile if last_error is not None and _is_transient(last_error) else FormatoInesperadoLeyChile
+    raise failure(f"No fue posible revisar idNorma={id_norma} después de {attempts} intentos.") from last_error
 
 
 def build_state(
@@ -517,6 +564,16 @@ def write_json_atomic(path: Path, value: Any) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     temporary.replace(path)
+
+
+def write_failure_output(error: BaseException) -> None:
+    """Informa a los workflows si la falla fue transitoria, para no abrir un issue por ella."""
+    output_path = os.environ.get("GITHUB_OUTPUT")
+    if not output_path:
+        return
+    kind = error.tipo if isinstance(error, RevisionFallida) else "error"
+    with Path(output_path).open("a", encoding="utf-8") as handle:
+        handle.write(f"tipo_falla={kind}\n")
 
 
 def write_github_output(result: ReviewResult) -> None:

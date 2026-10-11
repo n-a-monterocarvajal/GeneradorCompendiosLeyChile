@@ -41,6 +41,8 @@ No se compara HTML crudo: `ConsultaNormasBCN` demostró que contiene notas edito
 
 Si una fuente no puede revisarse después de los reintentos, la ejecución falla y no reemplaza el estado anterior. La ausencia temporal de datos nunca se interpreta como una actualización.
 
+La falla distingue su causa. Un timeout, un error de conexión o una respuesta HTTP 429 o 5xx es transitorio: el sitio no respondió y la revisión del día siguiente lo vuelve a intentar sin que nadie intervenga. Cualquier otra respuesta que no se pueda leer indica que Ley Chile cambió el servicio. Para no confundir un cambio de forma con una actualización normativa, la respuesta debe traer el título, el tipo y la fecha de versión, la vigencia actual con su inicio y al menos una vigencia; sin esas señales la huella dejaría de ser comparable y se publicaría un compendio sin cambios reales. Todas las normas de los compendios las informaban al 11 de octubre de 2026.
+
 ### 5.1 Reclasificaciones de vigencias históricas
 
 Ley Chile corrige de tanto en tanto los límites de fecha entre versiones ya superadas. El 27 de agosto de 2026 movió el corte entre dos vigencias de 1991 del Decreto N.º 55, de 1977 (`idNorma=8355`); no hubo decreto modificatorio y el texto descargado resultó idéntico salvo el sello de exportación que BCN estampa en cada página. Regenerar el compendio por ese ajuste sólo agrega ruido al historial de releases.

@@ -1,15 +1,23 @@
 import json
+import os
 import tempfile
 import unittest
 from datetime import date
 from pathlib import Path
+from unittest import mock
+
+import requests
 
 from generador_compendios_leychile.versiones import (
+    FallaTransitoriaLeyChile,
+    FormatoInesperadoLeyChile,
     ReviewResult,
     compare_states,
+    fetch_snapshot,
     format_summary,
     normalize_snapshot,
     review_versions,
+    write_failure_output,
 )
 
 
@@ -433,6 +441,93 @@ class VersionTests(unittest.TestCase):
         snapshot = normalize_snapshot("1984", "Código Penal", payload())
         changes = compare_states({"fuentes": {}}, {"fuentes": {"1984": snapshot}})
         self.assertEqual("significativa", changes[0]["relevancia"])
+
+
+class FakeResponse:
+    def __init__(self, status_code=200, body=None, text=None):
+        self.status_code = status_code
+        self._body = body
+        self._text = text
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"HTTP {self.status_code}", response=self)
+
+    def json(self):
+        if self._text is not None:
+            raise requests.JSONDecodeError("Expecting value", self._text, 0)
+        return self._body
+
+
+class FakeSession:
+    def __init__(self, *responses):
+        self.responses = list(responses)
+
+    def get(self, url, headers=None, timeout=None):
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+def fetch(*responses):
+    return fetch_snapshot(FakeSession(*responses), "1984", "Código Penal", base_wait=0)
+
+
+class FetchFailureTests(unittest.TestCase):
+    def setUp(self):
+        patcher = mock.patch("generador_compendios_leychile.versiones.time.sleep")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_valid_payload_is_read(self):
+        snapshot = fetch(FakeResponse(body=payload()))
+        self.assertEqual("CÓDIGO PENAL", snapshot["titulo_bcn"])
+
+    def test_gateway_timeout_is_transient(self):
+        with self.assertRaises(FallaTransitoriaLeyChile):
+            fetch(*(FakeResponse(504) for _ in range(3)))
+
+    def test_connection_error_is_transient(self):
+        with self.assertRaises(FallaTransitoriaLeyChile):
+            fetch(*(requests.ConnectionError("sin red") for _ in range(3)))
+
+    def test_html_instead_of_json_is_a_format_failure(self):
+        with self.assertRaises(FormatoInesperadoLeyChile):
+            fetch(*(FakeResponse(text="<html>Nuevo sitio</html>") for _ in range(3)))
+
+    def test_missing_metadata_is_a_format_failure(self):
+        with self.assertRaises(FormatoInesperadoLeyChile):
+            fetch(*(FakeResponse(body={"norma": {}}) for _ in range(3)))
+
+    def test_renamed_fields_are_a_format_failure_not_an_update(self):
+        renamed = payload()
+        renamed["metadatos"]["titulo"] = renamed["metadatos"].pop("titulo_norma")
+        renamed["metadatos"]["vigencia_actual"] = renamed["metadatos"].pop("vigencia")
+        with self.assertRaises(FormatoInesperadoLeyChile) as context:
+            fetch(*(FakeResponse(body=renamed) for _ in range(3)))
+        self.assertIn("titulo_norma, vigencia", str(context.exception.__cause__))
+
+    def test_not_found_is_a_format_failure(self):
+        with self.assertRaises(FormatoInesperadoLeyChile):
+            fetch(*(FakeResponse(404) for _ in range(3)))
+
+    def test_recovers_after_a_transient_failure(self):
+        snapshot = fetch(FakeResponse(504), FakeResponse(body=payload()))
+        self.assertEqual("1984", snapshot["id_norma"])
+
+    def test_failure_kind_is_written_for_the_workflow(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "salida"
+            with mock.patch.dict(os.environ, {"GITHUB_OUTPUT": str(output)}):
+                write_failure_output(FallaTransitoriaLeyChile("x"))
+                write_failure_output(FormatoInesperadoLeyChile("x"))
+                write_failure_output(ValueError("x"))
+            self.assertEqual(
+                "tipo_falla=transitoria\ntipo_falla=formato\ntipo_falla=error\n",
+                output.read_text(encoding="utf-8"),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
