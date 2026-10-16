@@ -21,6 +21,18 @@ JSON_URL = (
     "https://nuevo.leychile.cl/servicios/Navegar/get_norma_json"
     "?idNorma={id_norma}&idVersion=&idLey=&tipoVersion=&cve=&agrupa_partes=1&r={cache_buster}"
 )
+# Servicios que usa la misma página de Ley Chile para listar las versiones de una norma con
+# sus normas modificatorias y para identificar la última modificatoria de una versión.
+VERSIONES_URL = (
+    "https://nuevo.leychile.cl/servicios/Consulta/get_versiones"
+    "?idNorma={id_norma}&formato=json&idParte=&idsParte="
+)
+ULTIMA_MODIFICATORIA_URL = (
+    "https://nuevo.leychile.cl/servicios/Navegar/get_ultima_modificatoria"
+    "?idNorma={id_norma}&idVersion={fecha}&idParte="
+)
+# Fecha que Ley Chile usa como inicio de las vigencias diferidas sin fecha conocida.
+FECHA_SIN_DETERMINAR = "2222-02-02"
 
 
 @dataclass(frozen=True)
@@ -29,6 +41,7 @@ class ReviewResult:
     changes_detected: bool
     changes: list[dict[str, Any]]
     state: dict[str, Any]
+    state_migrated: bool = False
 
     @property
     def significant_changes(self) -> list[dict[str, Any]]:
@@ -47,9 +60,14 @@ class ReviewResult:
         ]
 
     @property
+    def status_warning_changes(self) -> list[dict[str, Any]]:
+        """Normas que pasaron a derogadas o refundidas: alguien debe decidir si siguen."""
+        return [change for change in self.changes if status_warnings(change)]
+
+    @property
     def state_updated(self) -> bool:
         """El estado persistente debe reescribirse, aunque no se publique nada."""
-        return self.baseline_created or bool(self.changes)
+        return self.baseline_created or self.state_migrated or bool(self.changes)
 
 
 def _scalar(value: Any) -> str:
@@ -128,7 +146,54 @@ def normalize_snapshot(id_norma: str, marker: str, payload: dict[str, Any]) -> d
     }
     canonical = json.dumps(stable, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     stable["huella"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    # Fuera de la huella: así, agregar estos datos no hace parecer cambiadas todas las normas
+    # de un estado guardado con una versión anterior del motor.
+    stable["estado"] = _normalize_status(metadata, payload.get("alertas"))
+    stable["version_vigente_indicada"] = indicated_current_version(id_norma, payload.get("alerta_global"))
     return stable
+
+
+_STATUS_ALERT_CLASSES = ("derogado", "refundido")
+
+
+def _normalize_status(metadata: dict[str, Any], alerts: Any) -> dict[str, Any]:
+    """Estado de la norma como fuente: derogación expresa o tácita y refundición en otra norma."""
+    candidates = alerts if isinstance(alerts, list) else [alerts]
+    found: list[dict[str, str]] = []
+    for alert in candidates:
+        if not isinstance(alert, dict):
+            continue
+        alert_class = _scalar(alert.get("clase")).casefold()
+        if alert_class in _STATUS_ALERT_CLASSES:
+            found.append({"clase": alert_class, "mensaje": _scalar(alert.get("mensaje"))})
+    found.sort(key=lambda item: json.dumps(item, ensure_ascii=False, sort_keys=True))
+    return {
+        "derogado": _scalar(metadata.get("derogado")).casefold() == "true",
+        "derogacion_tacita": _canonical(metadata.get("derogacion_tacita") or []),
+        "alertas": found,
+    }
+
+
+def indicated_current_version(id_norma: str, global_alert: Any) -> str:
+    """Fecha de la versión vigente cuando Ley Chile sirve por defecto otra que ya no lo está.
+
+    Ley Chile puede tardar en mover su versión por defecto a la que entró en vigor. Mientras
+    tanto, la página muestra el aviso «El texto de esta versión no se encuentra vigente» y un
+    enlace a la versión vigente, cuya fecha viene en ``alerta_global.e.f``.
+    """
+    if not isinstance(global_alert, dict):
+        return ""
+    target = global_alert.get("e")
+    if not isinstance(target, dict):
+        return ""
+    version = _scalar(target.get("f"))
+    if _scalar(target.get("i")) not in ("", str(id_norma)):
+        return ""
+    try:
+        date.fromisoformat(version)
+    except ValueError:
+        return ""
+    return version
 
 
 class RevisionFallida(RuntimeError):
@@ -263,6 +328,7 @@ _SIGNIFICANT_DETAIL_KEYS = (
     "eventos_pendientes",
     "fecha_version",
     "fecha_actualizacion_texto",
+    "estado_norma",
     "metadatos",
 )
 
@@ -437,10 +503,13 @@ def compare_states(
                 "relevancia": RELEVANCIA_SIGNIFICATIVA,
             })
             continue
-        if old.get("huella") == new.get("huella"):
+        status_change = _compare_status(old, new)
+        if old.get("huella") == new.get("huella") and status_change is None:
             continue
 
         details: dict[str, Any] = {}
+        if status_change is not None:
+            details["estado_norma"] = status_change
         added, removed, updated = _compare_versions(
             old.get("vigencias", []),
             new.get("vigencias", []),
@@ -462,21 +531,260 @@ def compare_states(
                 details[label] = {"antes": old.get(key), "despues": new.get(key)}
         if not details:
             details["metadatos"] = {"antes": old.get("huella"), "despues": new.get("huella")}
-        changes.append({
+        change = {
             "id_norma": id_norma,
             "marcador": new.get("marcador") or old.get("marcador") or "",
             "tipo": "version_actualizada",
             "relevancia": classify_relevance(details, new.get("vigencia_actual"), reference_day),
             "detalles": details,
-        })
+        }
+        if new.get("version_vigente_indicada"):
+            change["version_vigente_indicada"] = new["version_vigente_indicada"]
+        changes.append(change)
     return changes
+
+
+def _compare_status(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any] | None:
+    """Cambio de estado de la norma, o ``None``.
+
+    Un estado guardado por una versión anterior del motor no trae ``estado``; en ese caso no
+    hay con qué comparar y no se informa nada, para no publicar compendios sin cambios reales.
+    """
+    before = old.get("estado")
+    after = new.get("estado")
+    if not isinstance(before, dict) or not isinstance(after, dict) or before == after:
+        return None
+    return {"antes": before, "despues": after}
+
+
+def status_warnings(change: dict[str, Any]) -> list[str]:
+    """Avisos que exigen decidir si la norma sigue en el compendio."""
+    status = (change.get("detalles") or {}).get("estado_norma")
+    if not status:
+        return []
+    before = status.get("antes") or {}
+    after = status.get("despues") or {}
+    warnings: list[str] = []
+    before_alerts = {(item.get("clase"), item.get("mensaje")) for item in before.get("alertas", [])}
+    for alert in after.get("alertas", []):
+        if (alert.get("clase"), alert.get("mensaje")) in before_alerts:
+            continue
+        message = alert.get("mensaje") or ""
+        if alert.get("clase") == "derogado":
+            warnings.append(f"Norma derogada según Ley Chile: {message or 'sin detalle'}.")
+        elif alert.get("clase") == "refundido":
+            warnings.append(f"Norma refundida en otra según Ley Chile: {message or 'sin detalle'}.")
+    if after.get("derogado") and not before.get("derogado") and not any(
+        alert.get("clase") == "derogado" for alert in after.get("alertas", [])
+    ):
+        warnings.append("Norma derogada según Ley Chile.")
+    if after.get("derogacion_tacita") and after.get("derogacion_tacita") != before.get("derogacion_tacita"):
+        detail = json.dumps(after["derogacion_tacita"], ensure_ascii=False)
+        warnings.append(f"Ley Chile informa una derogación tácita: {detail}.")
+    return warnings
+
+
+_MONTHS = {
+    "ENE": 1, "FEB": 2, "MAR": 3, "ABR": 4, "MAY": 5, "JUN": 6,
+    "JUL": 7, "AGO": 8, "SEP": 9, "SET": 9, "OCT": 10, "NOV": 11, "DIC": 12,
+}
+
+
+def _iso_date(value: Any) -> str:
+    """Convierte ``16-OCT-2026`` o ``2026-10-16`` a ISO; si no puede, devuelve el texto tal cual."""
+    text = _scalar(value)
+    try:
+        return date.fromisoformat(text[:10]).isoformat()
+    except ValueError:
+        pass
+    parts = text.split("-")
+    if len(parts) == 3 and parts[1].upper() in _MONTHS:
+        try:
+            return date(int(parts[2]), _MONTHS[parts[1].upper()], int(parts[0])).isoformat()
+        except ValueError:
+            return text
+    return text
+
+
+def _as_list(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    return value if isinstance(value, list) else [value]
+
+
+def parse_modifying_norms(payload: Any) -> dict[str, list[dict[str, str]]]:
+    """Normas modificatorias por fecha de inicio de la versión que originan.
+
+    ``get_versiones`` cuelga cada modificatoria de la versión que termina, no de la que
+    empieza; por eso se agrupan por ``@inicioVigencia`` y nunca por la posición en la lista.
+    """
+    root = payload.get("Versiones") if isinstance(payload, dict) else None
+    if not isinstance(root, dict):
+        raise ValueError("Ley Chile respondió sin la lista de versiones.")
+    norms: dict[str, list[dict[str, str]]] = {}
+    for version in _as_list(root.get("Version")):
+        if not isinstance(version, dict):
+            continue
+        group = version.get("Modificatorias")
+        for item in _as_list(group.get("Modificatoria") if isinstance(group, dict) else None):
+            if not isinstance(item, dict):
+                continue
+            start = _iso_date(item.get("@inicioVigencia"))
+            norm = {
+                "tipo": _scalar(item.get("@tipoNorma")),
+                "numero": _scalar(item.get("@nroNorma")),
+                "id_norma": _scalar(item.get("@idNorma")),
+                "titulo": _scalar(item.get("@titulo")),
+                "fecha_publicacion": _iso_date(item.get("@fechaPublicacion")),
+                "tipo_modificacion": _scalar(item.get("@tipoModificacion")),
+            }
+            if start and norm not in norms.setdefault(start, []):
+                norms[start].append(norm)
+    return norms
+
+
+def parse_last_modifying_norm(payload: Any, version_start: str) -> dict[str, str] | None:
+    """Lee ``get_ultima_modificatoria``; solo vale si declara la misma fecha de inicio."""
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(payload, dict):
+        return None
+    if _iso_date(payload.get("fechainiciovigencia")) != version_start:
+        return None
+    if not _scalar(payload.get("idNorma")):
+        return None
+    return {
+        "tipo": _scalar(payload.get("tipo_norma")),
+        "numero": _scalar(payload.get("numero_norma")),
+        "id_norma": _scalar(payload.get("idNorma")),
+        "titulo": _scalar(payload.get("titulo")),
+        "fecha_publicacion": _iso_date(payload.get("fecha_publicacion_origen")),
+        "tipo_modificacion": "",
+    }
+
+
+def _get_json(session: requests.Session, url: str, referer: str, attempts: int = 2) -> Any:
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            response = session.get(url, headers={"Referer": referer}, timeout=60)
+            response.raise_for_status()
+            return response.json()
+        except (requests.RequestException, ValueError) as error:
+            last_error = error
+            if attempt < attempts:
+                time.sleep(2.0)
+    raise RuntimeError(f"No fue posible consultar {url}") from last_error
+
+
+def fetch_modifying_norms(
+    session: requests.Session,
+    id_norma: str,
+    starts: list[str],
+) -> dict[str, Any]:
+    """Busca la norma modificatoria de cada versión, sin fallar nunca la revisión.
+
+    Primero en ``get_versiones``, que las trae todas con título. Cuando una ley tiene vigencias
+    escalonadas, ese servicio la asocia a una sola fecha; para las demás se consulta
+    ``get_ultima_modificatoria``.
+    """
+    referer = f"https://www.bcn.cl/leychile/navegar?idNorma={id_norma}"
+    complete = True
+    try:
+        by_start = parse_modifying_norms(
+            _get_json(session, VERSIONES_URL.format(id_norma=id_norma), referer)
+        )
+    except Exception:
+        by_start = {}
+        complete = False
+    found: dict[str, list[dict[str, str]]] = {}
+    for start in starts:
+        norms = list(by_start.get(start, []))
+        if not norms and start != FECHA_SIN_DETERMINAR:
+            try:
+                last = parse_last_modifying_norm(
+                    _get_json(session, ULTIMA_MODIFICATORIA_URL.format(id_norma=id_norma, fecha=start), referer),
+                    start,
+                )
+            except Exception:
+                last = None
+                complete = False
+            if last is not None:
+                norms.append(last)
+        found[start] = norms
+    return {"por_vigencia": found, "consulta_completa": complete}
+
+
+def _modification_starts(change: dict[str, Any], today: date) -> list[str]:
+    """Fechas de inicio de las versiones nuevas o vigentes que vale la pena explicar."""
+    details = change.get("detalles") or {}
+    starts: list[str] = []
+
+    def add(version: Any) -> None:
+        start = _scalar(version.get("desde")) if isinstance(version, dict) else ""
+        if start and start not in starts:
+            starts.append(start)
+
+    for version in details.get("vigencias_agregadas", []):
+        add(version)
+    if "vigencia_actual" in details:
+        add(details["vigencia_actual"].get("despues"))
+    for update in details.get("vigencias_actualizadas", []):
+        after = update.get("despues") or {}
+        end = _parse_date(after.get("hasta"))
+        if end is None or end >= today:
+            add(after)
+    return starts
+
+
+def attach_modifying_norms(
+    changes: list[dict[str, Any]],
+    lookup: Callable[[str, list[str]], dict[str, Any]],
+    today: date | None = None,
+) -> None:
+    reference_day = today or datetime.now(timezone.utc).date()
+    for change in changes:
+        if change.get("tipo") != "version_actualizada":
+            continue
+        if change.get("relevancia") == RELEVANCIA_INFORMATIVA:
+            continue
+        starts = _modification_starts(change, reference_day)
+        if not starts:
+            continue
+        try:
+            change["normas_modificatorias"] = lookup(str(change["id_norma"]), starts)
+        except Exception:
+            change["normas_modificatorias"] = {
+                "por_vigencia": {start: [] for start in starts},
+                "consulta_completa": False,
+            }
+
+
+def _network_modifying_lookup(id_norma: str, starts: list[str]) -> dict[str, Any]:
+    session = requests.Session()
+    session.headers.update(HEADERS | {"Accept": "application/json,text/plain;q=0.9,*/*;q=0.8"})
+    try:
+        return fetch_modifying_norms(session, id_norma, starts)
+    finally:
+        session.close()
 
 
 def review_versions(
     config: dict[str, Any],
     state_path: Path,
     fetcher: Callable[[str, str], dict[str, Any]] | None = None,
+    modifying_lookup: Callable[[str, list[str]], dict[str, Any]] | None = None,
 ) -> ReviewResult:
+    """Compara el estado de Ley Chile con el guardado.
+
+    Sin ``fetcher`` se consulta Ley Chile, incluida la búsqueda de normas modificatorias.
+    Con un ``fetcher`` inyectado, esa búsqueda solo ocurre si también se inyecta ``modifying_lookup``.
+    """
+    if fetcher is None and modifying_lookup is None:
+        modifying_lookup = _network_modifying_lookup
     current = build_state(config, fetcher)
     if not state_path.exists():
         return ReviewResult(True, False, [], current)
@@ -485,25 +793,97 @@ def review_versions(
     if previous.get("schema_version") != STATE_SCHEMA_VERSION:
         raise ValueError("La versión del esquema de estado no es compatible.")
     changes = compare_states(previous, current)
+    if modifying_lookup is not None:
+        attach_modifying_norms(changes, modifying_lookup)
     significant = any(
         change.get("relevancia", RELEVANCIA_SIGNIFICATIVA) != RELEVANCIA_INFORMATIVA
         for change in changes
     )
-    return ReviewResult(False, significant, changes, current)
+    previous_sources = previous.get("fuentes") if isinstance(previous.get("fuentes"), dict) else {}
+    migrated = any(
+        isinstance(source, dict) and "estado" not in source
+        for source in previous_sources.values()
+    )
+    return ReviewResult(False, significant, changes, current, migrated)
+
+
+_CHANGE_LABELS = {
+    "version_actualizada": "versión actualizada",
+    "fuente_agregada": "fuente agregada",
+    "fuente_eliminada": "fuente eliminada",
+}
+
+_NORM_TYPES = {
+    "LEY": "Ley",
+    "DL": "Decreto Ley",
+    "DFL": "Decreto con Fuerza de Ley",
+    "DTO": "Decreto",
+    "DS": "Decreto Supremo",
+    "RES": "Resolución",
+    "REC": "Rectificación",
+}
+
+
+def _format_number(number: str) -> str:
+    if number.isdigit() and len(number) > 3:
+        return f"{int(number):,}".replace(",", ".")
+    return number
+
+
+def format_modifying_norm(norm: dict[str, Any]) -> str:
+    kind = _scalar(norm.get("tipo"))
+    label = _NORM_TYPES.get(kind.upper(), kind.capitalize() or "Norma")
+    number = _scalar(norm.get("numero"))
+    if number and number.upper() not in ("S/N", "SN"):
+        label = f"{label} N.º {_format_number(number)}"
+    id_norma = _scalar(norm.get("id_norma"))
+    if id_norma.isdigit():
+        label = f"[{label}](https://www.bcn.cl/leychile/navegar?idNorma={id_norma})"
+    published = _scalar(norm.get("fecha_publicacion"))
+    return f"{label}, publicada el {published}" if published else label
+
+
+def _modifying_lines(change: dict[str, Any], start: str, shown: set[str]) -> list[str]:
+    info = change.get("normas_modificatorias")
+    if not isinstance(info, dict) or start in shown:
+        return []
+    by_start = info.get("por_vigencia") or {}
+    if start not in by_start:
+        return []
+    shown.add(start)
+    norms = by_start.get(start) or []
+    if norms:
+        label = "Norma modificatoria" if len(norms) == 1 else "Normas modificatorias"
+        return [f"    - {label}: {'; '.join(format_modifying_norm(norm) for norm in norms)}."]
+    if info.get("consulta_completa", True):
+        return ["    - Ley Chile no informa la norma modificatoria de esta versión."]
+    return ["    - No fue posible consultar la norma modificatoria en Ley Chile."]
 
 
 def _format_change(change: dict[str, Any]) -> list[str]:
     marker = change.get("marcador") or "Norma sin título"
     id_norma = change["id_norma"]
     change_type = change["tipo"]
-    lines = [f"- **{marker}** (`idNorma={id_norma}`): {change_type.replace('_', ' ')}."]
+    label = _CHANGE_LABELS.get(change_type, change_type.replace("_", " "))
+    warnings = status_warnings(change)
+    alert = " ⚠️ requiere revisión" if warnings else ""
+    lines = [f"- **{marker}** (`idNorma={id_norma}`): {label}.{alert}"]
+    for warning in warnings:
+        lines.append(f"  - ⚠️ {warning}")
+    if warnings:
+        lines.append(
+            "  - El compendio todavía la incluye; quitarla o reemplazarla requiere editar "
+            "`app/fuentes.json`."
+        )
     details = change.get("detalles", {})
+    shown: set[str] = set()
     for version in details.get("vigencias_agregadas", []):
-        label = version.get("descripcion") or version.get("tipo") or "versión"
+        version_label = version.get("descripcion") or version.get("tipo") or "versión"
         period = f"desde {version.get('desde') or '?'}"
         if version.get("hasta"):
             period += f" hasta {version['hasta']}"
-        lines.append(f"  - Nueva vigencia: {label}, {period}.")
+        lines.append(f"  - Nueva vigencia: {version_label}, {period}.")
+        lines.extend(_modifying_lines(change, _scalar(version.get("desde")), shown))
     for update in details.get("vigencias_actualizadas", []):
         before = update.get("antes") or {}
         after = update.get("despues") or {}
@@ -516,11 +896,18 @@ def _format_change(change: dict[str, Any]) -> list[str]:
             f"  - Vigencia actualizada/reclasificada: {after_label}, {period} "
             f"(antes: {before_label})."
         )
+        lines.extend(_modifying_lines(change, _scalar(after.get("desde")), shown))
     if "vigencia_actual" in details:
         after = details["vigencia_actual"]["despues"] or {}
         lines.append(
             f"  - Vigencia actual: {after.get('descripcion') or after.get('tipo') or 'sin etiqueta'}, "
             f"desde {after.get('desde') or '?'} hasta {after.get('hasta') or 'sin término'}.")
+        lines.extend(_modifying_lines(change, _scalar(after.get("desde")), shown))
+    if change.get("version_vigente_indicada"):
+        lines.append(
+            "  - Ley Chile todavía muestra por defecto una versión que ya no está vigente; "
+            f"el compendio usa la versión vigente desde {change['version_vigente_indicada']}."
+        )
     if "diferido" in details:
         present = bool((details["diferido"]["despues"] or {}).get("presente"))
         lines.append(f"  - Texto diferido: {'presente' if present else 'ya no informado'}.")
@@ -585,6 +972,7 @@ def write_github_output(result: ReviewResult) -> None:
         "baseline_created": result.baseline_created,
         "informational_changes": bool(result.informational_changes),
         "state_updated": result.state_updated,
+        "avisos_norma": bool(result.status_warning_changes),
     }
     with Path(output_path).open("a", encoding="utf-8") as handle:
         for name, value in flags.items():

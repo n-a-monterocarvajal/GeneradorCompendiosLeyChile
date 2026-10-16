@@ -172,6 +172,61 @@ def click_sin_firma(page: Page, out_path: Path) -> bool:
             pass
 
 
+_EXPORT_VERSION = re.compile(r"(hddResultadoExportar=\d+\.)(\d{4}-\d{2}-\d{2})")
+_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def pin_export_version(href: str, version: str | None, logger: Callable[[str], None] | None = None) -> str:
+    """Fija en el enlace de exportación la versión que se quiere descargar."""
+    if not version:
+        return href
+    match = _EXPORT_VERSION.search(href)
+    if match is None:
+        return href
+    if match.group(2) != version and logger is not None:
+        logger(f"  La página ofrece la versión del {match.group(2)}; se descarga la vigente desde {version}.")
+    return href[:match.start(2)] + version + href[match.end(2):]
+
+
+def current_version_for(id_norma: str, logger: Callable[[str], None]) -> str | None:
+    """Fecha de la versión vigente según el servicio JSON de Ley Chile.
+
+    La página de una norma puede ofrecer para descargar una versión que ya no está vigente:
+    el 16 de octubre de 2026 el JSON ya informaba la versión de la Ley de Tránsito que regía
+    desde ese día, mientras la página seguía exportando la del 27 de agosto. Se descarga la
+    versión que informa el JSON, que es la misma que compara la revisión diaria. Si Ley Chile
+    avisa que su versión por defecto no está vigente, manda la versión a la que apunta el aviso.
+
+    Es una consulta de mejor esfuerzo: si falla, se descarga la versión por defecto, que es lo
+    que el generador hacía siempre.
+    """
+    from .versiones import JSON_URL, indicated_current_version
+
+    url = JSON_URL.format(id_norma=id_norma, cache_buster=int(time.time() * 1000))
+    referer = f"https://www.bcn.cl/leychile/navegar?idNorma={id_norma}"
+    try:
+        response = requests.get(
+            url,
+            headers=HEADERS | {"Referer": referer, "Accept": "application/json"},
+            timeout=90,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except (requests.RequestException, ValueError) as error:
+        logger(f"  No se pudo consultar la versión vigente ({type(error).__name__}); se usa la versión por defecto.")
+        return None
+    if not isinstance(payload, dict):
+        return None
+    indicated = indicated_current_version(id_norma, payload.get("alerta_global"))
+    if indicated:
+        logger(f"  Ley Chile avisa que su versión por defecto no está vigente; se usa la vigente desde {indicated}.")
+        return indicated
+    metadata = payload.get("metadatos") if isinstance(payload.get("metadatos"), dict) else {}
+    current = metadata.get("vigencia") if isinstance(metadata.get("vigencia"), dict) else {}
+    start = str(current.get("inicio_vigencia") or "").strip()[:10]
+    return start if _ISO_DATE.fullmatch(start) else None
+
+
 def _download_export_link(session: requests.Session, href: str, out_path: Path) -> bool:
     response = session.get(href, timeout=180, allow_redirects=True)
     response.raise_for_status()
@@ -190,6 +245,7 @@ def download_bcn(
     debug_directory: Path,
     attempt: int,
     logger: Callable[[str], None],
+    version: str | None = None,
 ) -> None:
     url = source.get("url") or f"https://www.bcn.cl/leychile/navegar?idNorma={source['id_norma']}"
     out_path.unlink(missing_ok=True)
@@ -202,6 +258,7 @@ def download_bcn(
 
         session = session_from_context(context, url)
         for href in find_export_links(page):
+            href = pin_export_version(href, version, logger)
             logger(f"  Descargando enlace real expuesto por Ley Chile: {href}")
             if _download_export_link(session, href, out_path):
                 return
@@ -213,9 +270,11 @@ def download_bcn(
         session = session_from_context(context, url)
 
         for href in find_export_links(page):
-            if _download_export_link(session, href, out_path):
+            if _download_export_link(session, pin_export_version(href, version, logger), out_path):
                 return
 
+        if version:
+            logger(f"  Sin enlace de exportación para fijar la versión {version}; se descarga la versión por defecto.")
         if click_sin_firma(page, out_path):
             return
 
@@ -336,11 +395,14 @@ class CompendiumGenerator:
                     marker = source["marcador"]
                     path = self.download_directory / f"{source.get('archivo') or safe_name(marker)}.pdf"
                     self.log(f"\n[{index}/{len(self.config['fuentes'])}] {marker}")
+                    version = current_version_for(str(source["id_norma"]), self.log)
 
                     for attempt in range(1, self.attempts + 1):
                         try:
                             self.log(f"  Intento {attempt}/{self.attempts}")
-                            download_bcn(context, source, path, self.download_directory, attempt, self.log)
+                            download_bcn(
+                                context, source, path, self.download_directory, attempt, self.log, version
+                            )
                             parts.append((marker, path))
                             completed_in_context += 1
                             break
