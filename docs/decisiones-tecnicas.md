@@ -53,6 +53,30 @@ Un cambio informativo se guarda en `estado-versiones.json` —para conservar la 
 
 Distinguir un corrimiento de límite de una vigencia realmente nueva exige emparejar bien los registros. Cuando BCN mueve el corte entre dos tramos contiguos, el primero conserva su inicio y el segundo su término, de modo que las vigencias pendientes se emparejan primero por `desde` y después por `hasta`. Sin la segunda pasada, el corrimiento aparecía como la desaparición de un tramo y la aparición de otro, es decir, como una condición que sí publica.
 
+### 5.2 Norma modificatoria
+
+`get_norma_json` no dice qué norma originó cada vigencia. El servicio `Consulta/get_versiones`, que usa la página de versiones de Ley Chile, sí lo informa: cada versión trae sus modificatorias con número, título, fecha de publicación e inicio de vigencia. Cuelga cada modificatoria de la versión que termina y no de la que empieza, de modo que se emparejan por `@inicioVigencia` con el inicio de la versión nueva, nunca por la posición en la lista.
+
+Ese servicio asocia una ley con vigencias escalonadas a una sola fecha. La Ley 21.713 generó versiones del Código Tributario el 1 de noviembre de 2024, el 1 de enero, el 24 de enero, el 25 de abril, el 1 de mayo y el 1 de julio de 2025, y `get_versiones` la nombra una sola vez. Para las demás fechas se consulta `Navegar/get_ultima_modificatoria`, que solo se acepta si declara el mismo inicio de vigencia. Algunas versiones no tienen modificatoria en ninguno de los dos, como la del 28 de noviembre de 2025 en los códigos Penal y Procesal Penal; el resumen dice entonces que Ley Chile no la informa.
+
+La consulta se hace solo para las normas con cambios significativos y nunca hace fallar la revisión: si Ley Chile no responde, el resumen lo indica y el resto sigue igual. El dato no entra en la huella ni en el estado, de modo que una corrección posterior de Ley Chile no publica un compendio.
+
+### 5.3 Derogación y refundición
+
+`get_norma_json` informa el estado de la norma como fuente: `metadatos.derogado`, `metadatos.derogacion_tacita` y alertas de clase `derogado` («Esta norma ha sido derogada el 12-FEB-2025», en la Ley 18.314) o `refundido` («Esta norma ha sido refundida por DFL-1 29-OCT-2009», en la Ley 18.290). La norma derogatoria, en cambio, no trae ningún campo que diga qué derogó, así que se vigila la norma que está en el compendio.
+
+Una norma derogada conserva su texto completo en la última versión: un compendio regenerado la incluiría como si siguiera vigente. Por eso el cambio de estado se destaca en el resumen y se publica `avisos_norma` para que el workflow abra un issue. Quitarla o reemplazarla en `fuentes.json` queda como decisión humana, porque a veces conviene conservarla durante una transición.
+
+El estado se guarda fuera de la huella. Así, la versión del motor que lo incorpora no hace parecer cambiadas todas las normas de un estado anterior: la primera revisión lo completa y desde la siguiente se compara.
+
+### 5.4 Versión vigente en la descarga
+
+El 16 de octubre de 2026 la página de la Ley de Tránsito siguió exportando la versión intermedia del 27 de agosto después de que entrara en vigor la del 16 de octubre. Durante unas horas el JSON la marcó con `alerta_global` («El texto de esta versión no se encuentra vigente», con la fecha de la vigente en `e.f`), y después informó la vigente en `metadatos.vigencia` mientras la página seguía ofreciendo la anterior. El generador ahora consulta el JSON antes de descargar cada norma, toma la fecha de la alerta o, si no hay, el inicio de la vigencia actual, y la fija en el enlace de exportación (`hddResultadoExportar=<idNorma>.<fecha>.0.0`).
+
+### 5.5 Campos que no se usan
+
+Del resto de `get_norma_json` no se usan los datos de identificación (`tipos_numeros`, `organismos`, fechas de publicación y promulgación, `materias`), las alertas de doble articulado y de texto que refunde a otro, `vinculaciones`, `resumenes`, `categorias_norma`, `jurisprudencia` ni `doctrina`, porque no cambian el texto que se descarga. Tampoco `proyectos`: lista todos los proyectos de modificación asociados a la norma (320 en el Código Procesal Penal), sin indicar cuáles siguen en trámite, así que un aviso basado en él no sería confiable.
+
 ## 6. Diferidos
 
 Para decidir si existe texto diferido se usa la alerta estructurada `clase=diferido`. La versión especial `idVersion=Diferido` es útil para localizar partes modificadas mediante texto previamente saneado, como documenta e implementa `ConsultaNormasBCN`, pero no es necesaria para decidir si debe regenerarse el compendio: los cambios del inventario de vigencias o de la alerta ya activan la revisión.
