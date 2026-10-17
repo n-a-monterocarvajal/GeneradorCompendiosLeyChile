@@ -77,6 +77,8 @@ El 16 de octubre de 2026 la página de la Ley de Tránsito siguió exportando la
 
 Ley Chile usa el 2 de febrero de 2222 como inicio de las vigencias que dependen de un evento sin fecha conocida, y el 1 de febrero de 2222 como término de la vigencia anterior. El estado conserva esas fechas tal como llegan, porque forman parte del inventario que se compara; solo el resumen de la revisión las traduce a «sin fecha de término definida» y «desde una fecha aún no determinada».
 
+Cuando la versión actual de una norma empieza en esa fecha, como la Ley N.º 20.084 desde octubre de 2026, el compendio publica igualmente la versión que muestra la web de Ley Chile: prima lo que Ley Chile ofrece como texto de la norma. Las notas del release lo advierten en «Notas sobre versiones» e indican la última versión con fecha de inicio.
+
 ### 5.6 Campos que no se usan
 
 Del resto de `get_norma_json` no se usan los datos de identificación (`tipos_numeros`, `organismos`, fechas de publicación y promulgación, `materias`), las alertas de doble articulado y de texto que refunde a otro, `vinculaciones`, `resumenes`, `categorias_norma`, `jurisprudencia` ni `doctrina`, porque no cambian el texto que se descarga. Tampoco `proyectos`: lista todos los proyectos de modificación asociados a la norma (320 en el Código Procesal Penal), sin indicar cuáles siguen en trámite, así que un aviso basado en él no sería confiable.

@@ -325,6 +325,31 @@ class CurrentVersionTests(unittest.TestCase):
         summary = format_summary(ReviewResult(False, True, [change], {}))
         self.assertIn("Vigencia actual: sin etiqueta, desde 2026-10-16, sin fecha de término.", summary)
 
+    def test_summary_explains_undated_current_versions(self):
+        change = {
+            "id_norma": "1", "marcador": "Norma", "tipo": "actualizada",
+            "detalles": {"vigencia_actual": {"antes": {}, "despues": {"desde": "2026-10-16", "hasta": ""}}},
+            "relevancia": "significativa",
+        }
+        state = {"fuentes": {
+            "244803": {
+                "marcador": "Ley N.º 20.084.",
+                "vigencia_actual": {"desde": "2222-02-02", "hasta": ""},
+                "vigencias": [
+                    {"desde": "2024-01-13", "hasta": "2026-01-12"},
+                    {"desde": "2026-01-13", "hasta": "2222-02-01"},
+                    {"desde": "2222-02-02", "hasta": ""},
+                ],
+            },
+            "1": {"marcador": "Norma", "vigencia_actual": {"desde": "2026-10-16", "hasta": ""}, "vigencias": []},
+        }}
+        summary = format_summary(ReviewResult(False, True, [change], state))
+        self.assertIn("## Notas sobre versiones", summary)
+        self.assertIn("**Ley N.º 20.084.** (`idNorma=244803`)", summary)
+        self.assertIn("la última versión con fecha de inicio es la del 2026-01-13.", summary)
+        self.assertNotIn("idNorma=1`): Ley Chile muestra", summary)
+        self.assertNotIn("Notas sobre versiones", format_summary(ReviewResult(False, False, [], state)))
+
     def test_pin_export_version(self):
         href = ("https://nuevo.leychile.cl/servicios/Consulta/Exportar?radioExportar=Normas"
                 "&exportar_formato=pdf&hddResultadoExportar=1007469.2026-08-27.0.0%23")

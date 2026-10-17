@@ -958,7 +958,47 @@ def format_summary(result: ReviewResult) -> str:
         for change in informational:
             lines.extend(_format_change(change))
         blocks.append("\n".join(lines))
+    if significant:
+        undated = _undated_current_versions(result.state)
+        if undated:
+            blocks.append("\n".join(["## Notas sobre versiones", "", *undated]))
     return "\n\n".join(blocks) + "\n"
+
+
+def _undated_current_versions(state: dict[str, Any]) -> list[str]:
+    """Explica las normas cuya versión por defecto en Ley Chile aún no tiene fecha de vigencia.
+
+    El compendio descarga la versión que muestra la web de Ley Chile. Cuando esa versión
+    empieza en la fecha centinela, la web la presenta como «Última Versión» sin fecha y su
+    texto puede incluir modificaciones que todavía no rigen.
+    """
+    sources = state.get("fuentes") if isinstance(state, dict) else None
+    if not isinstance(sources, dict):
+        return []
+    lines: list[str] = []
+    for id_norma, source in sources.items():
+        if not isinstance(source, dict):
+            continue
+        current = source.get("vigencia_actual") or {}
+        if not _scalar(current.get("desde")).startswith(_ANIO_CENTINELA):
+            continue
+        dated = [
+            version for version in source.get("vigencias") or []
+            if isinstance(version, dict)
+            and _parse_date(version.get("desde"))
+            and not _scalar(version.get("desde")).startswith(_ANIO_CENTINELA)
+        ]
+        line = (
+            f"- **{source.get('marcador') or id_norma}** (`idNorma={id_norma}`): Ley Chile muestra "
+            "como «Última Versión» un texto cuya entrada en vigor aún no tiene fecha determinada, "
+            "y el compendio incluye ese texto, igual que la web de Ley Chile. Puede contener "
+            "modificaciones que todavía no rigen"
+        )
+        if dated:
+            last = max(dated, key=lambda version: _scalar(version.get("desde")))
+            line += f"; la última versión con fecha de inicio es la del {_scalar(last.get('desde'))}"
+        lines.append(line + ".")
+    return lines
 
 
 def write_json_atomic(path: Path, value: Any) -> None:
