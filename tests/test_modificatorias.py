@@ -307,11 +307,22 @@ class CurrentVersionTests(unittest.TestCase):
             },
             "relevancia": "significativa",
         }
-        summary = format_summary(ReviewResult(False, True, [change], {}))
+        state = {"fuentes": {"1007469": {"eventos_pendientes": [
+            "La ley 21549 introdujo modificaciones a los artículos 4, 170 y 211.",
+            "La modificación ordenada por la ley 21797\xa0 entrará en vigencia con el reglamento.",
+        ]}}}
+        summary = format_summary(ReviewResult(False, True, [change], state))
+        self.assertIn(
+            "    - Pendiente de entrar en vigencia: La ley 21549 introdujo modificaciones a los "
+            "artículos 4, 170 y 211.\n"
+            "    - Pendiente de entrar en vigencia: La modificación ordenada por la ley 21797 "
+            "entrará en vigencia con el reglamento.",
+            summary,
+        )
         self.assertNotIn("2222", summary)
         self.assertIn(
             "Vigencia actual: Última Versión, desde 2026-10-16, sin fecha de término definida "
-            "(hay una modificación pendiente de entrar en vigor).",
+            "(hay una modificación pendiente de entrar en vigencia).",
             summary,
         )
         self.assertIn("Con Vigencia Diferida por Evento, desde una fecha aún no determinada.", summary)
