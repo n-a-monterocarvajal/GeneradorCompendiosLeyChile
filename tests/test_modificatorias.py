@@ -293,6 +293,38 @@ class CurrentVersionTests(unittest.TestCase):
         summary = format_summary(ReviewResult(False, True, compare_states(old, new), {}))
         self.assertIn("el compendio usa la versión vigente desde 2025-02-12", summary)
 
+    def test_summary_hides_ley_chile_sentinel_dates(self):
+        change = {
+            "id_norma": "1007469", "marcador": "Ley de Tránsito", "tipo": "actualizada",
+            "detalles": {
+                "vigencias_agregadas": [
+                    {"desde": "2222-02-02", "hasta": "", "descripcion": "Con Vigencia Diferida por Evento"},
+                ],
+                "vigencia_actual": {
+                    "antes": {"desde": "2026-08-27", "hasta": "2222-02-01", "descripcion": "Última Versión"},
+                    "despues": {"desde": "2026-10-16", "hasta": "2222-02-01", "descripcion": "Última Versión"},
+                },
+            },
+            "relevancia": "significativa",
+        }
+        summary = format_summary(ReviewResult(False, True, [change], {}))
+        self.assertNotIn("2222", summary)
+        self.assertIn(
+            "Vigencia actual: Última Versión, desde 2026-10-16, sin fecha de término definida "
+            "(hay una modificación pendiente de entrar en vigor).",
+            summary,
+        )
+        self.assertIn("Con Vigencia Diferida por Evento, desde una fecha aún no determinada.", summary)
+
+    def test_summary_open_current_version(self):
+        change = {
+            "id_norma": "1", "marcador": "Norma", "tipo": "actualizada",
+            "detalles": {"vigencia_actual": {"antes": {}, "despues": {"desde": "2026-10-16", "hasta": ""}}},
+            "relevancia": "significativa",
+        }
+        summary = format_summary(ReviewResult(False, True, [change], {}))
+        self.assertIn("Vigencia actual: sin etiqueta, desde 2026-10-16, sin fecha de término.", summary)
+
     def test_pin_export_version(self):
         href = ("https://nuevo.leychile.cl/servicios/Consulta/Exportar?radioExportar=Normas"
                 "&exportar_formato=pdf&hddResultadoExportar=1007469.2026-08-27.0.0%23")

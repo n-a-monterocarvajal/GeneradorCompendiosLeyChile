@@ -73,7 +73,11 @@ El estado se guarda fuera de la huella. Así, la versión del motor que lo incor
 
 El 16 de octubre de 2026 la página de la Ley de Tránsito siguió exportando la versión intermedia del 27 de agosto después de que entrara en vigor la del 16 de octubre. Durante unas horas el JSON la marcó con `alerta_global` («El texto de esta versión no se encuentra vigente», con la fecha de la vigente en `e.f`), y después informó la vigente en `metadatos.vigencia` mientras la página seguía ofreciendo la anterior. El generador ahora consulta el JSON antes de descargar cada norma, toma la fecha de la alerta o, si no hay, el inicio de la vigencia actual, y la fija en el enlace de exportación (`hddResultadoExportar=<idNorma>.<fecha>.0.0`).
 
-### 5.5 Campos que no se usan
+### 5.5 Fechas centinela de 2222
+
+Ley Chile usa el 2 de febrero de 2222 como inicio de las vigencias que dependen de un evento sin fecha conocida, y el 1 de febrero de 2222 como término de la vigencia anterior. El estado conserva esas fechas tal como llegan, porque forman parte del inventario que se compara; solo el resumen de la revisión las traduce a «sin fecha de término definida» y «desde una fecha aún no determinada».
+
+### 5.6 Campos que no se usan
 
 Del resto de `get_norma_json` no se usan los datos de identificación (`tipos_numeros`, `organismos`, fechas de publicación y promulgación, `materias`), las alertas de doble articulado y de texto que refunde a otro, `vinculaciones`, `resumenes`, `categorias_norma`, `jurisprudencia` ni `doctrina`, porque no cambian el texto que se descarga. Tampoco `proyectos`: lista todos los proyectos de modificación asociados a la norma (320 en el Código Procesal Penal), sin indicar cuáles siguen en trámite, así que un aviso basado en él no sería confiable.
 

@@ -31,8 +31,10 @@ ULTIMA_MODIFICATORIA_URL = (
     "https://nuevo.leychile.cl/servicios/Navegar/get_ultima_modificatoria"
     "?idNorma={id_norma}&idVersion={fecha}&idParte="
 )
-# Fecha que Ley Chile usa como inicio de las vigencias diferidas sin fecha conocida.
+# Fecha que Ley Chile usa como inicio de las vigencias diferidas sin fecha conocida. La
+# vigencia anterior a una de ellas termina, en los datos, el día previo (2222-02-01).
 FECHA_SIN_DETERMINAR = "2222-02-02"
+_ANIO_CENTINELA = "2222-"
 
 
 @dataclass(frozen=True)
@@ -879,21 +881,15 @@ def _format_change(change: dict[str, Any]) -> list[str]:
     shown: set[str] = set()
     for version in details.get("vigencias_agregadas", []):
         version_label = version.get("descripcion") or version.get("tipo") or "versión"
-        period = f"desde {version.get('desde') or '?'}"
-        if version.get("hasta"):
-            period += f" hasta {version['hasta']}"
-        lines.append(f"  - Nueva vigencia: {version_label}, {period}.")
+        lines.append(f"  - Nueva vigencia: {version_label}, {_period(version)}.")
         lines.extend(_modifying_lines(change, _scalar(version.get("desde")), shown))
     for update in details.get("vigencias_actualizadas", []):
         before = update.get("antes") or {}
         after = update.get("despues") or {}
         before_label = before.get("descripcion") or before.get("tipo") or "sin etiqueta"
         after_label = after.get("descripcion") or after.get("tipo") or "sin etiqueta"
-        period = f"desde {after.get('desde') or '?'}"
-        if after.get("hasta"):
-            period += f" hasta {after['hasta']}"
         lines.append(
-            f"  - Vigencia actualizada/reclasificada: {after_label}, {period} "
+            f"  - Vigencia actualizada/reclasificada: {after_label}, {_period(after)} "
             f"(antes: {before_label})."
         )
         lines.extend(_modifying_lines(change, _scalar(after.get("desde")), shown))
@@ -901,7 +897,7 @@ def _format_change(change: dict[str, Any]) -> list[str]:
         after = details["vigencia_actual"]["despues"] or {}
         lines.append(
             f"  - Vigencia actual: {after.get('descripcion') or after.get('tipo') or 'sin etiqueta'}, "
-            f"desde {after.get('desde') or '?'} hasta {after.get('hasta') or 'sin término'}.")
+            f"{_period(after, open_end=', sin fecha de término')}.")
         lines.extend(_modifying_lines(change, _scalar(after.get("desde")), shown))
     if change.get("version_vigente_indicada"):
         lines.append(
@@ -914,6 +910,25 @@ def _format_change(change: dict[str, Any]) -> list[str]:
     if "eventos_pendientes" in details:
         lines.append("  - Cambiaron los eventos pendientes informados por Ley Chile.")
     return lines
+
+
+def _period(version: dict[str, Any], open_end: str = "") -> str:
+    """Describe el período de una vigencia sin mostrar las fechas centinela de Ley Chile.
+
+    Ley Chile fecha el 2 de febrero de 2222 el inicio de las vigencias que dependen de un
+    evento futuro, y el 1 de febrero de 2222 el término de la vigencia que las precede.
+    """
+    start = _scalar(version.get("desde"))
+    end = _scalar(version.get("hasta"))
+    if start.startswith(_ANIO_CENTINELA):
+        period = "desde una fecha aún no determinada"
+    else:
+        period = f"desde {start or '?'}"
+    if end.startswith(_ANIO_CENTINELA):
+        return period + ", sin fecha de término definida (hay una modificación pendiente de entrar en vigor)"
+    if end:
+        return period + f" hasta {end}"
+    return period + open_end
 
 
 def format_summary(result: ReviewResult) -> str:
