@@ -179,7 +179,7 @@ def _normalize_status(metadata: dict[str, Any], alerts: Any) -> dict[str, Any]:
 def indicated_current_version(id_norma: str, global_alert: Any) -> str:
     """Fecha de la versión vigente cuando Ley Chile sirve por defecto otra que ya no lo está.
 
-    Ley Chile puede tardar en mover su versión por defecto a la que entró en vigor. Mientras
+    Ley Chile puede tardar en mover su versión por defecto a la que entró en vigencia. Mientras
     tanto, la página muestra el aviso «El texto de esta versión no se encuentra vigente» y un
     enlace a la versión vigente, cuya fecha viene en ``alerta_global.e.f``.
     """
@@ -862,7 +862,7 @@ def _modifying_lines(change: dict[str, Any], start: str, shown: set[str]) -> lis
     return ["    - No fue posible consultar la norma modificatoria en Ley Chile."]
 
 
-def _format_change(change: dict[str, Any]) -> list[str]:
+def _format_change(change: dict[str, Any], pending: list[str] | None = None) -> list[str]:
     marker = change.get("marcador") or "Norma sin título"
     id_norma = change["id_norma"]
     change_type = change["tipo"]
@@ -898,6 +898,9 @@ def _format_change(change: dict[str, Any]) -> list[str]:
         lines.append(
             f"  - Vigencia actual: {after.get('descripcion') or after.get('tipo') or 'sin etiqueta'}, "
             f"{_period(after, open_end=', sin fecha de término')}.")
+        if _scalar(after.get("hasta")).startswith(_ANIO_CENTINELA):
+            for event in pending or []:
+                lines.append(f"    - Pendiente de entrar en vigencia: {event}")
         lines.extend(_modifying_lines(change, _scalar(after.get("desde")), shown))
     if change.get("version_vigente_indicada"):
         lines.append(
@@ -925,7 +928,7 @@ def _period(version: dict[str, Any], open_end: str = "") -> str:
     else:
         period = f"desde {start or '?'}"
     if end.startswith(_ANIO_CENTINELA):
-        return period + ", sin fecha de término definida (hay una modificación pendiente de entrar en vigor)"
+        return period + ", sin fecha de término definida (hay una modificación pendiente de entrar en vigencia)"
     if end:
         return period + f" hasta {end}"
     return period + open_end
@@ -944,7 +947,7 @@ def format_summary(result: ReviewResult) -> str:
     if significant:
         lines = ["## Actualizaciones de normas detectadas", ""]
         for change in significant:
-            lines.extend(_format_change(change))
+            lines.extend(_format_change(change, _pending_events(result.state, change.get("id_norma"))))
         blocks.append("\n".join(lines))
     if informational:
         lines = [
@@ -958,7 +961,57 @@ def format_summary(result: ReviewResult) -> str:
         for change in informational:
             lines.extend(_format_change(change))
         blocks.append("\n".join(lines))
+    if significant:
+        undated = _undated_current_versions(result.state)
+        if undated:
+            blocks.append("\n".join(["## Notas sobre versiones", "", *undated]))
     return "\n\n".join(blocks) + "\n"
+
+
+def _pending_events(state: dict[str, Any], id_norma: Any) -> list[str]:
+    """Eventos que Ley Chile informa como pendientes para una norma, en una línea cada uno."""
+    sources = state.get("fuentes") if isinstance(state, dict) else None
+    source = sources.get(str(id_norma)) if isinstance(sources, dict) else None
+    if not isinstance(source, dict):
+        return []
+    events = source.get("eventos_pendientes") or []
+    return [" ".join(_scalar(event).split()) for event in events if _scalar(event)]
+
+
+def _undated_current_versions(state: dict[str, Any]) -> list[str]:
+    """Explica las normas cuya versión por defecto en Ley Chile aún no tiene fecha de vigencia.
+
+    El compendio descarga la versión que muestra la web de Ley Chile. Cuando esa versión
+    empieza en la fecha centinela, la web la presenta como «Última Versión» sin fecha y su
+    texto puede incluir modificaciones que todavía no rigen.
+    """
+    sources = state.get("fuentes") if isinstance(state, dict) else None
+    if not isinstance(sources, dict):
+        return []
+    lines: list[str] = []
+    for id_norma, source in sources.items():
+        if not isinstance(source, dict):
+            continue
+        current = source.get("vigencia_actual") or {}
+        if not _scalar(current.get("desde")).startswith(_ANIO_CENTINELA):
+            continue
+        dated = [
+            version for version in source.get("vigencias") or []
+            if isinstance(version, dict)
+            and _parse_date(version.get("desde"))
+            and not _scalar(version.get("desde")).startswith(_ANIO_CENTINELA)
+        ]
+        line = (
+            f"- **{source.get('marcador') or id_norma}** (`idNorma={id_norma}`): Ley Chile muestra "
+            "como «Última Versión» un texto cuya entrada en vigencia aún no tiene fecha determinada, "
+            "y el compendio incluye ese texto, igual que la web de Ley Chile. Puede contener "
+            "modificaciones que todavía no rigen"
+        )
+        if dated:
+            last = max(dated, key=lambda version: _scalar(version.get("desde")))
+            line += f"; la última versión con fecha de inicio es la del {_scalar(last.get('desde'))}"
+        lines.append(line + ".")
+    return lines
 
 
 def write_json_atomic(path: Path, value: Any) -> None:
