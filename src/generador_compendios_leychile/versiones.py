@@ -146,13 +146,59 @@ def normalize_snapshot(id_norma: str, marker: str, payload: dict[str, Any]) -> d
         "eventos_pendientes": _canonical(metadata.get("eventos_pendientes") or []),
         "diferido": _normalize_deferred_alert(payload.get("alertas")),
     }
-    canonical = json.dumps(stable, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    stable["huella"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    indicated = indicated_current_version(id_norma, payload.get("alerta_global"))
+    stable["vigencia_actual"] = _effective_current(current, versions, indicated)
+    stable["huella"] = _fingerprint(stable)
     # Fuera de la huella: así, agregar estos datos no hace parecer cambiadas todas las normas
     # de un estado guardado con una versión anterior del motor.
     stable["estado"] = _normalize_status(metadata, payload.get("alertas"))
-    stable["version_vigente_indicada"] = indicated_current_version(id_norma, payload.get("alerta_global"))
+    stable["version_vigente_indicada"] = indicated
     return stable
+
+
+_FINGERPRINT_KEYS = (
+    "id_norma", "marcador", "titulo_bcn", "vigencia_actual", "vigencias", "fecha_version",
+    "fecha_actualizacion_texto", "eventos_pendientes", "diferido",
+)
+
+
+def _fingerprint(snapshot: dict[str, Any]) -> str:
+    stable = {key: snapshot.get(key) for key in _FINGERPRINT_KEYS}
+    canonical = json.dumps(stable, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _effective_current(
+    current: dict[str, str], versions: list[dict[str, str]], indicated: str
+) -> dict[str, str]:
+    """Vigencia actual que publica el compendio.
+
+    Cuando Ley Chile sirve por defecto una versión que ya no está vigente y avisa cuál sí lo
+    está, el compendio descarga esta última. Ley Chile alterna por días entre ambas respuestas;
+    si la vigencia actual siguiera a la versión por defecto, cada alternancia parecería una
+    versión nueva y publicaría un compendio con el mismo texto.
+    """
+    if not indicated or current.get("desde") == indicated:
+        return current
+    for version in versions:
+        if version.get("desde") == indicated:
+            return dict(version)
+    return current
+
+
+def effective_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Aplica la vigencia efectiva a una norma guardada por un motor anterior a 0.1.8."""
+    if not isinstance(snapshot, dict) or not isinstance(snapshot.get("vigencia_actual"), dict):
+        return snapshot
+    versions = [item for item in snapshot.get("vigencias") or [] if isinstance(item, dict)]
+    effective = _effective_current(
+        snapshot["vigencia_actual"], versions, _scalar(snapshot.get("version_vigente_indicada"))
+    )
+    if effective == snapshot["vigencia_actual"]:
+        return snapshot
+    updated = dict(snapshot, vigencia_actual=effective)
+    updated["huella"] = _fingerprint(updated)
+    return updated
 
 
 _STATUS_ALERT_CLASSES = ("derogado", "refundido")
@@ -794,6 +840,10 @@ def review_versions(
         previous = json.load(handle)
     if previous.get("schema_version") != STATE_SCHEMA_VERSION:
         raise ValueError("La versión del esquema de estado no es compatible.")
+    previous_sources = previous.get("fuentes") if isinstance(previous.get("fuentes"), dict) else {}
+    effective_sources = {key: effective_snapshot(source) for key, source in previous_sources.items()}
+    pinned = effective_sources != previous_sources
+    previous = dict(previous, fuentes=effective_sources)
     changes = compare_states(previous, current)
     if modifying_lookup is not None:
         attach_modifying_norms(changes, modifying_lookup)
@@ -801,8 +851,7 @@ def review_versions(
         change.get("relevancia", RELEVANCIA_SIGNIFICATIVA) != RELEVANCIA_INFORMATIVA
         for change in changes
     )
-    previous_sources = previous.get("fuentes") if isinstance(previous.get("fuentes"), dict) else {}
-    migrated = any(
+    migrated = pinned or any(
         isinstance(source, dict) and "estado" not in source
         for source in previous_sources.values()
     )
