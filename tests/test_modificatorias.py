@@ -10,6 +10,7 @@ import requests
 
 from generador_compendios_leychile.generador import pin_export_version
 from generador_compendios_leychile.versiones import (
+    _fingerprint,
     ReviewResult,
     attach_modifying_norms,
     compare_states,
@@ -283,6 +284,41 @@ class CurrentVersionTests(unittest.TestCase):
         self.assertEqual("", indicated_current_version("176595", alert))
         self.assertEqual("", indicated_current_version("29731", {"m": ["Derogada"], "e": {"i": "", "f": ""}}))
         self.assertEqual("", indicated_current_version("29731", ""))
+
+    @staticmethod
+    def _stale_default():
+        """Ley Chile sirve por defecto la versión que terminó y avisa cuál está vigente."""
+        payload = norma(versions=DESPUES, current_start="2024-09-04",
+                        alerta_global={"e": {"i": "29731", "f": "2025-02-12"}})
+        # fecha_version es la de la norma y no cambia con la versión servida (Tránsito: 2009-10-29).
+        payload["metadatos"].update(tipo_version="1", tipo_version_s="Intermedio", fecha_version="2025-02-12")
+        payload["metadatos"]["vigencia"]["fin_vigencia"] = "2025-02-11"
+        return payload
+
+    def test_alternating_default_version_is_not_a_change(self):
+        current = norma(versions=DESPUES, current_start="2025-02-12")
+        for old_payload, new_payload in ((current, self._stale_default()), (self._stale_default(), current)):
+            old, new = snapshots(old_payload, new_payload)
+            self.assertEqual([], compare_states(old, new))
+        stale = normalize_snapshot("29731", "Ley N.º 18.314.", self._stale_default())
+        self.assertEqual("2025-02-12", stale["vigencia_actual"]["desde"])
+        self.assertEqual("Última Versión", stale["vigencia_actual"]["descripcion"])
+
+    def test_state_with_stale_default_is_migrated_without_changes(self):
+        config = {"fuentes": [{"id_norma": "29731", "marcador": "Ley N.º 18.314."}]}
+        snapshot = normalize_snapshot("29731", "Ley N.º 18.314.", norma(versions=DESPUES, current_start="2025-02-12"))
+        legacy = normalize_snapshot("29731", "Ley N.º 18.314.", self._stale_default())
+        legacy = dict(legacy, vigencia_actual={
+            "desde": "2024-09-04", "hasta": "2025-02-11", "tipo": "1", "descripcion": "Intermedio",
+        })
+        legacy["huella"] = _fingerprint(legacy)  # como la guardaba el motor 0.1.7
+        self.assertNotEqual(snapshot["huella"], legacy["huella"])
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "estado.json"
+            state_path.write_text(json.dumps({"schema_version": 1, "fuentes": {"29731": legacy}}), encoding="utf-8")
+            result = review_versions(config, state_path, lambda *_: snapshot)
+        self.assertEqual([], result.changes)
+        self.assertTrue(result.state_updated)
 
     def test_summary_explains_the_pinned_version(self):
         old, new = snapshots(
