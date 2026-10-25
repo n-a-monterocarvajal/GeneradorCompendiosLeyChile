@@ -444,10 +444,12 @@ class VersionTests(unittest.TestCase):
 
 
 class FakeResponse:
-    def __init__(self, status_code=200, body=None, text=None):
+    def __init__(self, status_code=200, body=None, text=None, content_type="application/json"):
         self.status_code = status_code
         self._body = body
         self._text = text
+        self.text = text if text is not None else ""
+        self.headers = {"Content-Type": content_type}
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -492,9 +494,22 @@ class FetchFailureTests(unittest.TestCase):
         with self.assertRaises(FallaTransitoriaLeyChile):
             fetch(*(requests.ConnectionError("sin red") for _ in range(3)))
 
-    def test_html_instead_of_json_is_a_format_failure(self):
+    def test_html_instead_of_json_is_transient_and_described(self):
+        page = "<html><head><title>Sitio en mantención</title></head><body></body></html>"
+        with self.assertRaises(FallaTransitoriaLeyChile) as context:
+            fetch(*(FakeResponse(text=page, content_type="text/html") for _ in range(3)))
+        message = str(context.exception)
+        self.assertIn("HTTP 200, text/html", message)
+        self.assertIn("«Sitio en mantención»", message)
+
+    def test_empty_body_is_transient(self):
+        with self.assertRaises(FallaTransitoriaLeyChile) as context:
+            fetch(*(FakeResponse(text="") for _ in range(3)))
+        self.assertIn("0 caracteres", str(context.exception))
+
+    def test_unreadable_json_is_a_format_failure(self):
         with self.assertRaises(FormatoInesperadoLeyChile):
-            fetch(*(FakeResponse(text="<html>Nuevo sitio</html>") for _ in range(3)))
+            fetch(*(FakeResponse(text='{"metadatos": ') for _ in range(3)))
 
     def test_missing_metadata_is_a_format_failure(self):
         with self.assertRaises(FormatoInesperadoLeyChile):
@@ -507,6 +522,7 @@ class FetchFailureTests(unittest.TestCase):
         with self.assertRaises(FormatoInesperadoLeyChile) as context:
             fetch(*(FakeResponse(body=renamed) for _ in range(3)))
         self.assertIn("titulo_norma, vigencia", str(context.exception.__cause__))
+        self.assertIn("titulo_norma, vigencia", str(context.exception))
 
     def test_not_found_is_a_format_failure(self):
         with self.assertRaises(FormatoInesperadoLeyChile):
@@ -514,6 +530,10 @@ class FetchFailureTests(unittest.TestCase):
 
     def test_recovers_after_a_transient_failure(self):
         snapshot = fetch(FakeResponse(504), FakeResponse(body=payload()))
+        self.assertEqual("1984", snapshot["id_norma"])
+
+    def test_recovers_after_a_maintenance_page(self):
+        snapshot = fetch(FakeResponse(text="<html></html>", content_type="text/html"), FakeResponse(body=payload()))
         self.assertEqual("1984", snapshot["id_norma"])
 
     def test_failure_kind_is_written_for_the_workflow(self):
