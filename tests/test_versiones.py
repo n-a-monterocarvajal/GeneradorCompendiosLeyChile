@@ -541,10 +541,12 @@ class FetchFailureTests(unittest.TestCase):
             output = Path(directory) / "salida"
             with mock.patch.dict(os.environ, {"GITHUB_OUTPUT": str(output)}):
                 write_failure_output(FallaTransitoriaLeyChile("x"))
-                write_failure_output(FormatoInesperadoLeyChile("x"))
-                write_failure_output(ValueError("x"))
+                write_failure_output(FormatoInesperadoLeyChile("y\nz"))
+                write_failure_output(ValueError())
             self.assertEqual(
-                "tipo_falla=transitoria\ntipo_falla=formato\ntipo_falla=error\n",
+                "tipo_falla=transitoria\ndetalle_falla=x\n"
+                "tipo_falla=formato\ndetalle_falla=y z\n"
+                "tipo_falla=error\ndetalle_falla=ValueError\n",
                 output.read_text(encoding="utf-8"),
             )
 

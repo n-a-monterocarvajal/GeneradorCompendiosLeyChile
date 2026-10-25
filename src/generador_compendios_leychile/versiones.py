@@ -1111,8 +1111,10 @@ def write_failure_output(error: BaseException) -> None:
     if not output_path:
         return
     kind = error.tipo if isinstance(error, RevisionFallida) else "error"
+    detail = " ".join(str(error).split()) or type(error).__name__
     with Path(output_path).open("a", encoding="utf-8") as handle:
         handle.write(f"tipo_falla={kind}\n")
+        handle.write(f"detalle_falla={detail}\n")
 
 
 def write_github_output(result: ReviewResult) -> None:
