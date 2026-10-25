@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import random
+import re
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -262,6 +263,38 @@ class FormatoInesperadoLeyChile(RevisionFallida):
     tipo = "formato"
 
 
+class RespuestaNoJson(ValueError):
+    """Ley Chile respondió con un cuerpo vacío o una página HTML en vez de JSON.
+
+    Es lo que entrega el sitio durante sus mantenciones (pasó el 25-oct-2026 en los tres
+    compendios durante unos minutos), así que se trata como falla transitoria. Si se
+    repite varios días seguidos, los workflows de los compendios abren igual un issue.
+    """
+
+
+def _describe_response(response: Any) -> str:
+    headers = getattr(response, "headers", None) or {}
+    content_type = headers.get("Content-Type") or headers.get("content-type") or "sin Content-Type"
+    text = getattr(response, "text", "") or ""
+    title = re.search(r"<title[^>]*>(.*?)</title>", text, re.IGNORECASE | re.DOTALL)
+    detail = f"HTTP {response.status_code}, {content_type}, {len(text.strip())} caracteres"
+    if title and title.group(1).strip():
+        detail += f", título «{' '.join(title.group(1).split())[:120]}»"
+    return detail
+
+
+def _parse_json(response: Any) -> Any:
+    try:
+        return response.json()
+    except ValueError as error:
+        text = (getattr(response, "text", "") or "").lstrip()
+        if not text or text.startswith("<"):
+            raise RespuestaNoJson(
+                f"Ley Chile respondió sin JSON ({_describe_response(response)})."
+            ) from error
+        raise ValueError(f"Ley Chile respondió con JSON ilegible ({_describe_response(response)}).") from error
+
+
 # Señales que todas las normas de los compendios informan hoy. Si alguna falta, la
 # respuesta cambió de forma y la huella dejaría de ser comparable con la anterior: se
 # trata como falla de lectura en vez de reportarla como una actualización normativa.
@@ -288,7 +321,7 @@ def _is_transient(error: Exception) -> bool:
         return True
     if isinstance(error, requests.HTTPError) and error.response is not None:
         return error.response.status_code == 429 or error.response.status_code >= 500
-    return False
+    return isinstance(error, RespuestaNoJson)
 
 
 def fetch_snapshot(
@@ -307,7 +340,7 @@ def fetch_snapshot(
             if response.status_code == 429 or response.status_code >= 500:
                 raise requests.HTTPError(f"Respuesta transitoria HTTP {response.status_code}", response=response)
             response.raise_for_status()
-            payload = response.json()
+            payload = _parse_json(response)
             _validate_payload(payload)
             return normalize_snapshot(id_norma, marker, payload)
         except (requests.RequestException, ValueError, json.JSONDecodeError) as error:
@@ -315,7 +348,9 @@ def fetch_snapshot(
             if attempt < attempts:
                 time.sleep(min(20.0, base_wait * (2 ** (attempt - 1)) + random.uniform(0, 1)))
     failure = FallaTransitoriaLeyChile if last_error is not None and _is_transient(last_error) else FormatoInesperadoLeyChile
-    raise failure(f"No fue posible revisar idNorma={id_norma} después de {attempts} intentos.") from last_error
+    raise failure(
+        f"No fue posible revisar idNorma={id_norma} después de {attempts} intentos: {last_error}"
+    ) from last_error
 
 
 def build_state(
@@ -1076,8 +1111,10 @@ def write_failure_output(error: BaseException) -> None:
     if not output_path:
         return
     kind = error.tipo if isinstance(error, RevisionFallida) else "error"
+    detail = " ".join(str(error).split()) or type(error).__name__
     with Path(output_path).open("a", encoding="utf-8") as handle:
         handle.write(f"tipo_falla={kind}\n")
+        handle.write(f"detalle_falla={detail}\n")
 
 
 def write_github_output(result: ReviewResult) -> None:
