@@ -60,6 +60,8 @@ revisar-versiones-leychile \
   --resumen trabajo/cambios-versiones.md
 ```
 
+La revisión consulta los servicios JSON de Ley Chile desde Chromium, por lo que requiere el navegador instalado (`python -m playwright install --with-deps chromium`).
+
 El estado normaliza las vigencias informadas por Ley Chile, la vigencia actual, eventos pendientes y alertas de texto diferido. La primera ejecución crea una línea base sin solicitar un compendio. Ejecuciones posteriores reportan solo diferencias semánticas; cambios de orden o valores volátiles no disparan una publicación.
 
 Los cambios se clasifican además por relevancia. Cuando Ley Chile sólo corrige fechas de vigencias ya históricas —algo que no altera el texto que se descarga hoy— el cambio se registra en el estado y en el resumen, pero no solicita un compendio nuevo.
