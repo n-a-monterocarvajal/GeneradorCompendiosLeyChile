@@ -358,17 +358,15 @@ def build_state(
     fetcher: Callable[[str, str], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if fetcher is None:
-        session = requests.Session()
-        session.headers.update(HEADERS | {"Accept": "application/json,text/plain;q=0.9,*/*;q=0.8"})
-        try:
+        from .navegador import SesionNavegador
+
+        with SesionNavegador(id_norma_inicial=str(config["fuentes"][0]["id_norma"])) as session:
             sources = {
                 str(source["id_norma"]): fetch_snapshot(
                     session, str(source["id_norma"]), str(source["marcador"])
                 )
                 for source in config["fuentes"]
             }
-        finally:
-            session.close()
     else:
         sources = {
             str(source["id_norma"]): fetcher(str(source["id_norma"]), str(source["marcador"]))
@@ -847,12 +845,10 @@ def attach_modifying_norms(
 
 
 def _network_modifying_lookup(id_norma: str, starts: list[str]) -> dict[str, Any]:
-    session = requests.Session()
-    session.headers.update(HEADERS | {"Accept": "application/json,text/plain;q=0.9,*/*;q=0.8"})
-    try:
+    from .navegador import SesionNavegador
+
+    with SesionNavegador(id_norma_inicial=id_norma) as session:
         return fetch_modifying_norms(session, id_norma, starts)
-    finally:
-        session.close()
 
 
 def review_versions(

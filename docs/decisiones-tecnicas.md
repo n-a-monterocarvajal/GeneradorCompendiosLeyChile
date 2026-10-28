@@ -104,3 +104,7 @@ Antes de publicar, cada repositorio particular valida el PDF completo, calcula s
 Las releases futuras se configuran como inmutables. El tag y los assets publicados no se reemplazan ni eliminan; cualquier corrección produce una nueva release. Los borradores siguen siendo el área de preparación recuperable antes de la publicación.
 
 Esta decisión y las alternativas evaluadas se detallan en [analisis-trackerslist.md](analisis-trackerslist.md).
+
+## Consultas JSON desde el navegador
+
+Desde la versión 0.1.10, para robustecer el método de obtención, la revisión diaria y la consulta de la versión vigente en la generación piden los servicios JSON de Ley Chile a través de un contexto de Chromium (`SesionNavegador`), en lugar de un cliente HTTP aparte. Las fallas de red del navegador se traducen a las de `requests`, así que los reintentos y la clasificación `transitoria`/`formato` no cambian.

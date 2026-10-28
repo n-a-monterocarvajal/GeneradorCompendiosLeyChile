@@ -188,7 +188,9 @@ def pin_export_version(href: str, version: str | None, logger: Callable[[str], N
     return href[:match.start(2)] + version + href[match.end(2):]
 
 
-def current_version_for(id_norma: str, logger: Callable[[str], None]) -> str | None:
+def current_version_for(
+    id_norma: str, logger: Callable[[str], None], context: BrowserContext | None = None
+) -> str | None:
     """Fecha de la versión vigente según el servicio JSON de Ley Chile.
 
     La página de una norma puede ofrecer para descargar una versión que ya no está vigente:
@@ -198,18 +200,24 @@ def current_version_for(id_norma: str, logger: Callable[[str], None]) -> str | N
     avisa que su versión por defecto no está vigente, manda la versión a la que apunta el aviso.
 
     Es una consulta de mejor esfuerzo: si falla, se descarga la versión por defecto, que es lo
-    que el generador hacía siempre.
+    que el generador hacía siempre. Con ``context`` la consulta va por el navegador de la
+    generación.
     """
     from .versiones import JSON_URL, indicated_current_version
 
     url = JSON_URL.format(id_norma=id_norma, cache_buster=int(time.time() * 1000))
     referer = f"https://www.bcn.cl/leychile/navegar?idNorma={id_norma}"
     try:
-        response = requests.get(
-            url,
-            headers=HEADERS | {"Referer": referer, "Accept": "application/json"},
-            timeout=90,
-        )
+        if context is not None:
+            from .navegador import SesionNavegador
+
+            response = SesionNavegador(context).get(url, headers={"Referer": referer, "Accept": "application/json"}, timeout=90)
+        else:
+            response = requests.get(
+                url,
+                headers=HEADERS | {"Referer": referer, "Accept": "application/json"},
+                timeout=90,
+            )
         response.raise_for_status()
         payload = response.json()
     except (requests.RequestException, ValueError) as error:
@@ -395,7 +403,7 @@ class CompendiumGenerator:
                     marker = source["marcador"]
                     path = self.download_directory / f"{source.get('archivo') or safe_name(marker)}.pdf"
                     self.log(f"\n[{index}/{len(self.config['fuentes'])}] {marker}")
-                    version = current_version_for(str(source["id_norma"]), self.log)
+                    version = current_version_for(str(source["id_norma"]), self.log, context)
 
                     for attempt in range(1, self.attempts + 1):
                         try:
