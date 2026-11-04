@@ -328,16 +328,36 @@ def copy_outline(
     return copied
 
 
-def merge(parts: list[tuple[str, Path]], out_path: Path, title: str, logger: Callable[[str], None]) -> None:
+def merge(
+    parts: list[tuple[str, Path]] | list[tuple[str, Path, str | None]],
+    out_path: Path,
+    title: str,
+    logger: Callable[[str], None],
+) -> None:
+    """Une las partes en un PDF con un marcador por norma.
+
+    Cada parte puede traer un capítulo; las normas seguidas de un mismo capítulo quedan como
+    marcadores hijos de un marcador del capítulo, que apunta a la primera página de su primera norma.
+    """
     logger("\nUniendo documentos y creando marcadores...")
     writer = PdfWriter()
-    for marker, path in parts:
+    chapter_name: str | None = None
+    chapter_item = None
+    for part in parts:
+        marker, path = part[0], part[1]
+        chapter = part[2] if len(part) > 2 else None
         reader = PdfReader(str(path))
         start_page = len(writer.pages)
         page_count = len(reader.pages)
         for page in reader.pages:
             writer.add_page(page)
-        parent = writer.add_outline_item(marker, start_page)
+        if chapter is None:
+            chapter_name, chapter_item = None, None
+        elif chapter != chapter_name:
+            chapter_name = chapter
+            chapter_item = writer.add_outline_item(chapter, start_page)
+            logger(f"  Capítulo: {chapter}")
+        parent = writer.add_outline_item(marker, start_page, parent=chapter_item)
         try:
             copied = copy_outline(reader, writer, reader.outline or [], parent, start_page, page_count)
             logger(f"  Marcador principal: {marker}; marcadores internos: {copied}")
@@ -385,7 +405,7 @@ class CompendiumGenerator:
         self.log_path.write_text("", encoding="utf-8")
         self.log(f"Salida: {self.output_path.resolve()}")
 
-        parts: list[tuple[str, Path]] = []
+        parts: list[tuple[str, Path, str | None]] = []
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(
                 headless=not bool(self.config.get("bcn_navegador_visible", False))
@@ -411,7 +431,7 @@ class CompendiumGenerator:
                             download_bcn(
                                 context, source, path, self.download_directory, attempt, self.log, version
                             )
-                            parts.append((marker, path))
+                            parts.append((marker, path, str(source.get("capitulo") or "").strip() or None))
                             completed_in_context += 1
                             break
                         except Exception as error:

@@ -48,6 +48,19 @@ Opcionalmente se puede agregar:
 }
 ```
 
+Para agrupar las normas en el índice del PDF, cada fuente puede declarar un `capitulo`:
+
+```json
+{
+  "tipo": "bcn",
+  "id_norma": "251693",
+  "marcador": "Decreto con Fuerza de Ley N.º 1, de 2006, ...",
+  "capitulo": "IV. Municipalidades, régimen orgánico y participación local"
+}
+```
+
+Las normas seguidas de un mismo capítulo quedan como marcadores hijos de un marcador del capítulo, que apunta a la primera página de su primera norma. El campo es opcional, pero si una fuente lo declara todas deben hacerlo, y las normas de un capítulo deben ir seguidas. Sin `capitulo`, el índice sigue siendo plano: un marcador por norma.
+
 Cada norma se descarga en la versión vigente que informa el servicio JSON de Ley Chile, que es la misma que compara la revisión de versiones. La página de una norma puede seguir ofreciendo por unas horas una versión que ya no está vigente; en ese caso el generador cambia la fecha del enlace de exportación y lo deja anotado en el log. Si esa consulta falla, descarga la versión que ofrece la página.
 
 ## Revisar versiones

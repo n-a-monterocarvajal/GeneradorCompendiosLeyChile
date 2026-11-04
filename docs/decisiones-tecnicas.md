@@ -23,6 +23,8 @@ El reintento completo de GitHub Actions se conserva como segunda barrera operati
 
 Los marcadores internos de un PDF de origen pueden apuntar a una página inexistente o ser incompatibles con `pypdf`. El marcador principal de cada norma es obligatorio; un marcador interno inválido se omite sin abortar todo el compendio.
 
+Cuando las fuentes declaran `capitulo`, el marcador de cada norma cuelga del marcador de su capítulo. Exigir que el campo esté en todas las fuentes o en ninguna, y que un capítulo no reaparezca después de otro, evita índices con normas sueltas o capítulos partidos.
+
 ## 4. Validación temprana de configuración
 
 Antes de abrir Chromium se comprueban tipos de fuente, unicidad de `id_norma` y nombres de archivo, dominios permitidos, concordancia entre URL e identificador y rangos de configuración. Un error estructural no se reintenta como si fuera una falla transitoria.
