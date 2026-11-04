@@ -36,6 +36,8 @@ def validate_config(config: dict[str, Any]) -> None:
 
     seen_ids: set[str] = set()
     seen_files: set[str] = set()
+    closed_chapters: set[str] = set()
+    current_chapter: str | None = None
     for index, source in enumerate(sources, start=1):
         if not isinstance(source, dict):
             raise ValueError(f"La fuente {index} debe ser un objeto.")
@@ -60,6 +62,21 @@ def validate_config(config: dict[str, Any]) -> None:
             raise ValueError(f"archivo duplicado: {file_stub}")
         seen_files.add(file_stub)
 
+        if "capitulo" in source:
+            chapter = source["capitulo"]
+            if not isinstance(chapter, str) or not chapter.strip():
+                raise ValueError(f"capitulo inválido en la fuente {index}: debe ser un texto no vacío.")
+            chapter = chapter.strip()
+            if chapter != current_chapter:
+                if chapter in closed_chapters:
+                    raise ValueError(
+                        f"El capítulo {chapter!r} reaparece en la fuente {index}: "
+                        "las normas de un mismo capítulo deben ir seguidas."
+                    )
+                if current_chapter is not None:
+                    closed_chapters.add(current_chapter)
+                current_chapter = chapter
+
         url = str(source.get("url") or f"https://www.bcn.cl/leychile/navegar?idNorma={id_norma}")
         parsed = urlparse(url)
         if parsed.scheme != "https" or parsed.hostname not in ALLOWED_BCN_HOSTS:
@@ -67,6 +84,10 @@ def validate_config(config: dict[str, Any]) -> None:
         url_id = (parse_qs(parsed.query).get("idNorma") or [""])[0]
         if url_id != id_norma:
             raise ValueError(f"La URL de la fuente {index} no coincide con id_norma={id_norma}.")
+
+    with_chapter = sum(1 for source in sources if "capitulo" in source)
+    if with_chapter not in (0, len(sources)):
+        raise ValueError("Si una fuente declara capitulo, todas deben declararlo.")
 
     download = config.get("descarga", {})
     if not isinstance(download, dict):

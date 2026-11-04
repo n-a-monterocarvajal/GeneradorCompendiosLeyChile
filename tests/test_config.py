@@ -42,6 +42,33 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "inseguro"):
             validate_config(config)
 
+    def _with_chapters(self, *chapters):
+        config = valid_config()
+        base = config["fuentes"][0]
+        config["fuentes"] = [
+            dict(base, id_norma=str(1000 + i), url=f"https://www.bcn.cl/leychile/navegar?idNorma={1000 + i}",
+                 archivo=f"norma_{i}", capitulo=chapter)
+            for i, chapter in enumerate(chapters)
+        ]
+        return config
+
+    def test_chapters_are_valid_when_contiguous(self):
+        validate_config(self._with_chapters("I. Constitución", "I. Constitución", "II. Municipios"))
+
+    def test_chapter_must_not_reappear(self):
+        with self.assertRaisesRegex(ValueError, "reaparece"):
+            validate_config(self._with_chapters("I", "II", "I"))
+
+    def test_chapter_must_be_text(self):
+        with self.assertRaisesRegex(ValueError, "capitulo inválido"):
+            validate_config(self._with_chapters("I", " "))
+
+    def test_chapter_is_all_or_nothing(self):
+        config = self._with_chapters("I", "II")
+        del config["fuentes"][1]["capitulo"]
+        with self.assertRaisesRegex(ValueError, "todas deben declararlo"):
+            validate_config(config)
+
 
 if __name__ == "__main__":
     unittest.main()
