@@ -8,7 +8,7 @@ from unittest import mock
 
 import requests
 
-from generador_compendios_leychile.generador import pin_export_part, pin_export_version
+from generador_compendios_leychile.generador import _download_parts, pin_export_part, pin_export_version
 from generador_compendios_leychile.versiones import (
     _fingerprint,
     ReviewResult,
@@ -414,6 +414,49 @@ class CurrentVersionTests(unittest.TestCase):
         self.assertEqual(href, pin_export_part(href, None))
         # Sin la forma esperada no se descarga la norma completa en lugar de la parte.
         self.assertIsNone(pin_export_part("https://otro", "8720755"))
+
+    def test_parts_are_downloaded_and_joined_in_order(self):
+        import io
+        import tempfile
+        from pathlib import Path
+
+        from pypdf import PdfReader, PdfWriter
+
+        def pdf(pages):
+            writer = PdfWriter()
+            for _ in range(pages):
+                writer.add_blank_page(72, 72)
+            buffer = io.BytesIO()
+            writer.write(buffer)
+            return buffer.getvalue()
+
+        class Response:
+            def __init__(self, content):
+                self.content = content
+                self.headers = {"content-type": "application/pdf"}
+
+            def raise_for_status(self):
+                pass
+
+        requested = []
+
+        class Session:
+            def get(self, href, timeout=None, allow_redirects=None):
+                requested.append(href)
+                return Response(pdf(1 if ".23." in href else 2))
+
+        href = "https://nuevo.leychile.cl/servicios/Consulta/Exportar?hddResultadoExportar=9.2025-01-01.0.0%23"
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory) / "norma.pdf"
+            # Los PDF de prueba son más chicos que el mínimo que exige assert_pdf.
+            with mock.patch("generador_compendios_leychile.generador.assert_pdf", lambda path: PdfReader(str(path))):
+                _download_parts(Session(), href, ["23", "32"], out, lambda message: None)
+            self.assertEqual(3, len(PdfReader(str(out)).pages))
+            self.assertEqual([out], list(Path(directory).iterdir()))
+        self.assertEqual(
+            ["hddResultadoExportar=9.2025-01-01.23.0%23", "hddResultadoExportar=9.2025-01-01.32.0%23"],
+            [item.split("?")[1] for item in requested],
+        )
 
 
 if __name__ == "__main__":

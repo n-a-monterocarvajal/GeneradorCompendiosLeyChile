@@ -605,6 +605,21 @@ class PartTests(unittest.TestCase):
         ))
         self.assertNotEqual(before["huella"], changed["huella"])
 
+    def test_several_parts_join_their_versions(self):
+        responses = [
+            FakeResponse(body=payload(current_start="2025-01-01")),
+            FakeResponse(body=part_versions(("Única", "2020-02-24", ""))),
+            FakeResponse(body=part_versions(
+                ("Última Versión", "2024-11-01", ""), ("Texto Original", "2020-02-24", "2024-10-31"),
+            )),
+        ]
+        snapshot = fetch_snapshot(
+            FakeSession(*responses), "1142667", "Ley 21.210", base_wait=0, id_parte=["10103129", "10103250"],
+        )
+        self.assertEqual("10103129,10103250", snapshot["id_parte"])
+        self.assertEqual("2024-11-01", snapshot["vigencia_actual"]["desde"])
+        self.assertEqual(3, len(snapshot["vigencias"]))
+
     def test_sources_without_part_keep_their_fingerprint(self):
         snapshot = normalize_snapshot("1984", "Código Penal", payload())
         self.assertNotIn("id_parte", snapshot)

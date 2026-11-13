@@ -1,6 +1,6 @@
 import unittest
 
-from generador_compendios_leychile.config import safe_name, source_url, validate_config
+from generador_compendios_leychile.config import safe_name, source_parts, source_url, validate_config
 
 
 def valid_config():
@@ -62,8 +62,24 @@ class ConfigTests(unittest.TestCase):
         config = valid_config()
         config["fuentes"][0]["id_parte"] = "8720755"
         config["fuentes"][0]["url"] = "https://www.bcn.cl/leychile/navegar?idNorma=1984&idParte=1"
-        with self.assertRaisesRegex(ValueError, "id_parte=8720755"):
+        with self.assertRaisesRegex(ValueError, "no coincide con id_parte"):
             validate_config(config)
+
+    def test_several_parts_are_valid(self):
+        config = valid_config()
+        source = config["fuentes"][0]
+        del source["url"]
+        source["id_parte"] = [10103129, "10103236", 10103250]
+        validate_config(config)
+        self.assertEqual(["10103129", "10103236", "10103250"], source_parts(source))
+        self.assertTrue(source_url(source).endswith("&idParte=10103129"))
+
+    def test_parts_must_not_repeat_or_be_empty(self):
+        for value in ([1, 1], [], [1, True]):
+            config = valid_config()
+            config["fuentes"][0]["id_parte"] = value
+            with self.assertRaises(ValueError):
+                validate_config(config)
 
     def _with_chapters(self, *chapters):
         config = valid_config()

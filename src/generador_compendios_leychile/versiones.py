@@ -13,6 +13,7 @@ from typing import Any, Callable
 
 import requests
 
+from .config import source_parts
 from .generador import HEADERS
 
 STATE_SCHEMA_VERSION = 1
@@ -223,21 +224,35 @@ def parse_part_versions(payload: Any) -> list[dict[str, str]]:
     return versions
 
 
+def _part_current(versions: list[dict[str, str]]) -> dict[str, str]:
+    return next((item for item in reversed(versions) if item["tipo"] in ("2", "3")), versions[-1])
+
+
 def apply_part_versions(
-    snapshot: dict[str, Any], id_parte: str, versions: list[dict[str, str]]
+    snapshot: dict[str, Any], versions_by_part: dict[str, list[dict[str, str]]]
 ) -> dict[str, Any]:
-    """Sigue solo las versiones de una parte de la norma.
+    """Sigue solo las versiones de las partes de la norma que incluye la fuente.
 
     Una fuente puede ser un artículo de una norma mayor: la ley de herencias vigente es el
     artículo 8 del DFL 1 de 2000 de Justicia, que también fija el texto del Código Civil. Si la
     revisión comparara las versiones de la norma completa, cada cambio del Código Civil
-    publicaría un compendio con el mismo texto de herencias.
+    publicaría un compendio con el mismo texto de herencias. Con varias partes, las vigencias
+    son la unión de las de cada parte y la vigencia actual es la más reciente de ellas.
     """
-    current = next((item for item in reversed(versions) if item["tipo"] in ("2", "3")), versions[-1])
+    versions: list[dict[str, str]] = []
+    for part_versions in versions_by_part.values():
+        for item in part_versions:
+            if item not in versions:
+                versions.append(dict(item))
+    versions.sort(key=lambda item: (item["desde"], item["hasta"], item["tipo"], item["descripcion"]))
+    current = max(
+        (_part_current(part_versions) for part_versions in versions_by_part.values()),
+        key=lambda item: item["desde"],
+    )
     updated = dict(
         snapshot,
-        id_parte=str(id_parte),
-        vigencias=[dict(item) for item in versions],
+        id_parte=",".join(versions_by_part),
+        vigencias=versions,
         vigencia_actual=dict(current),
         # El aviso de versión no vigente se refiere a la norma completa.
         version_vigente_indicada="",
@@ -389,7 +404,7 @@ def fetch_snapshot(
     marker: str,
     attempts: int = 3,
     base_wait: float = 2.0,
-    id_parte: str = "",
+    id_parte: str | list[str] = "",
 ) -> dict[str, Any]:
     referer = f"https://www.bcn.cl/leychile/navegar?idNorma={id_norma}"
     last_error: Exception | None = None
@@ -403,17 +418,21 @@ def fetch_snapshot(
             payload = _parse_json(response)
             _validate_payload(payload)
             snapshot = normalize_snapshot(id_norma, marker, payload)
-            if not id_parte:
+            parts = [str(part) for part in (id_parte if isinstance(id_parte, list) else [id_parte]) if str(part)]
+            if not parts:
                 return snapshot
-            response = session.get(
-                PARTE_VERSIONES_URL.format(id_norma=id_norma, id_parte=id_parte),
-                headers={"Referer": referer},
-                timeout=90,
-            )
-            if response.status_code == 429 or response.status_code >= 500:
-                raise requests.HTTPError(f"Respuesta transitoria HTTP {response.status_code}", response=response)
-            response.raise_for_status()
-            return apply_part_versions(snapshot, id_parte, parse_part_versions(_parse_json(response)))
+            versions_by_part: dict[str, list[dict[str, str]]] = {}
+            for part in parts:
+                response = session.get(
+                    PARTE_VERSIONES_URL.format(id_norma=id_norma, id_parte=part),
+                    headers={"Referer": referer},
+                    timeout=90,
+                )
+                if response.status_code == 429 or response.status_code >= 500:
+                    raise requests.HTTPError(f"Respuesta transitoria HTTP {response.status_code}", response=response)
+                response.raise_for_status()
+                versions_by_part[part] = parse_part_versions(_parse_json(response))
+            return apply_part_versions(snapshot, versions_by_part)
         except (requests.RequestException, ValueError, json.JSONDecodeError) as error:
             last_error = error
             if attempt < attempts:
@@ -437,7 +456,7 @@ def build_state(
                     session,
                     str(source["id_norma"]),
                     str(source["marcador"]),
-                    id_parte=str(source.get("id_parte") or ""),
+                    id_parte=source_parts(source),
                 )
                 for source in config["fuentes"]
             }
