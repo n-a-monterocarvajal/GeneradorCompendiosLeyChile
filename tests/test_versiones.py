@@ -16,6 +16,7 @@ from generador_compendios_leychile.versiones import (
     fetch_snapshot,
     format_summary,
     normalize_snapshot,
+    parse_part_versions,
     review_versions,
     write_failure_output,
 )
@@ -549,6 +550,64 @@ class FetchFailureTests(unittest.TestCase):
                 "tipo_falla=error\ndetalle_falla=ValueError\n",
                 output.read_text(encoding="utf-8"),
             )
+
+
+def part_versions(*versions):
+    return {"Versiones": {"@id_norma": 172986, "Version": [
+        {"@tipoVersion": kind, "@vigenteDesde": start, **({"@vigenteHasta": end} if end else {})}
+        for kind, start, end in versions
+    ]}}
+
+
+class PartTests(unittest.TestCase):
+    def setUp(self):
+        patcher = mock.patch("generador_compendios_leychile.versiones.time.sleep")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def fetch_part(self, norm_start, part):
+        return fetch_snapshot(
+            FakeSession(FakeResponse(body=payload(current_start=norm_start)), FakeResponse(body=part)),
+            "172986", "Ley de herencias", base_wait=0, id_parte="8720755",
+        )
+
+    def test_part_versions_are_parsed(self):
+        versions = parse_part_versions(part_versions(
+            ("Última Versión", "2022-02-04", ""), ("Texto Original", "2000-05-30", "2022-02-03"),
+        ))
+        self.assertEqual(["2000-05-30", "2022-02-04"], [item["desde"] for item in versions])
+        self.assertEqual(["0", "2"], [item["tipo"] for item in versions])
+
+    def test_part_without_versions_is_a_format_failure(self):
+        with self.assertRaises(FormatoInesperadoLeyChile):
+            fetch_snapshot(
+                FakeSession(*(response for _ in range(3) for response in (
+                    FakeResponse(body=payload()), FakeResponse(body={"Versiones": {}}),
+                ))),
+                "172986", "Ley de herencias", base_wait=0, id_parte="8720755",
+            )
+
+    def test_part_follows_its_own_versions(self):
+        part = part_versions(("Última Versión", "2022-02-04", ""), ("Texto Original", "2000-05-30", "2022-02-03"))
+        snapshot = self.fetch_part("2025-08-28", part)
+        self.assertEqual("8720755", snapshot["id_parte"])
+        self.assertEqual("2022-02-04", snapshot["vigencia_actual"]["desde"])
+        self.assertEqual(["2000-05-30", "2022-02-04"], [item["desde"] for item in snapshot["vigencias"]])
+
+    def test_change_elsewhere_in_the_norm_does_not_change_the_part(self):
+        part = part_versions(("Última Versión", "2022-02-04", ""), ("Texto Original", "2000-05-30", "2022-02-03"))
+        before = self.fetch_part("2025-08-28", part)
+        after = self.fetch_part("2026-11-20", part)
+        self.assertEqual(before["huella"], after["huella"])
+        changed = self.fetch_part("2026-11-20", part_versions(
+            ("Última Versión", "2026-11-20", ""), ("Intermedio", "2022-02-04", "2026-11-19"),
+            ("Texto Original", "2000-05-30", "2022-02-03"),
+        ))
+        self.assertNotEqual(before["huella"], changed["huella"])
+
+    def test_sources_without_part_keep_their_fingerprint(self):
+        snapshot = normalize_snapshot("1984", "Código Penal", payload())
+        self.assertNotIn("id_parte", snapshot)
 
 
 if __name__ == "__main__":

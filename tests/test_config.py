@@ -1,6 +1,6 @@
 import unittest
 
-from generador_compendios_leychile.config import safe_name, validate_config
+from generador_compendios_leychile.config import safe_name, source_url, validate_config
 
 
 def valid_config():
@@ -40,6 +40,29 @@ class ConfigTests(unittest.TestCase):
         config = valid_config()
         config["fuentes"][0]["archivo"] = "../codigo"
         with self.assertRaisesRegex(ValueError, "inseguro"):
+            validate_config(config)
+
+    def test_part_is_valid_and_builds_its_url(self):
+        config = valid_config()
+        source = config["fuentes"][0]
+        del source["url"]
+        source["id_parte"] = "8720755"
+        validate_config(config)
+        self.assertEqual(
+            "https://www.bcn.cl/leychile/navegar?idNorma=1984&idParte=8720755", source_url(source)
+        )
+
+    def test_part_must_be_numeric(self):
+        config = valid_config()
+        config["fuentes"][0]["id_parte"] = "art8"
+        with self.assertRaisesRegex(ValueError, "id_parte inválido"):
+            validate_config(config)
+
+    def test_url_must_match_part(self):
+        config = valid_config()
+        config["fuentes"][0]["id_parte"] = "8720755"
+        config["fuentes"][0]["url"] = "https://www.bcn.cl/leychile/navegar?idNorma=1984&idParte=1"
+        with self.assertRaisesRegex(ValueError, "id_parte=8720755"):
             validate_config(config)
 
     def _with_chapters(self, *chapters):

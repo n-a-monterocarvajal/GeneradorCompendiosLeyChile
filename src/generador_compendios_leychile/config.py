@@ -10,6 +10,15 @@ from urllib.parse import parse_qs, urlparse
 ALLOWED_BCN_HOSTS = {"bcn.cl", "www.bcn.cl", "leychile.cl", "www.leychile.cl"}
 
 
+def source_url(source: dict[str, Any]) -> str:
+    """URL de la norma en Ley Chile; con ``id_parte``, la de esa parte de la norma."""
+    if source.get("url"):
+        return str(source["url"])
+    url = f"https://www.bcn.cl/leychile/navegar?idNorma={str(source.get('id_norma') or '').strip()}"
+    id_parte = str(source.get("id_parte") or "").strip()
+    return f"{url}&idParte={id_parte}" if id_parte else url
+
+
 def safe_name(value: str) -> str:
     ascii_value = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
     return re.sub(r"[^a-zA-Z0-9_-]+", "_", ascii_value).strip("_") or "archivo"
@@ -77,13 +86,21 @@ def validate_config(config: dict[str, Any]) -> None:
                     closed_chapters.add(current_chapter)
                 current_chapter = chapter
 
-        url = str(source.get("url") or f"https://www.bcn.cl/leychile/navegar?idNorma={id_norma}")
+        url = source_url(source)
         parsed = urlparse(url)
         if parsed.scheme != "https" or parsed.hostname not in ALLOWED_BCN_HOSTS:
             raise ValueError(f"URL BCN inválida en la fuente {index}: {url}")
         url_id = (parse_qs(parsed.query).get("idNorma") or [""])[0]
         if url_id != id_norma:
             raise ValueError(f"La URL de la fuente {index} no coincide con id_norma={id_norma}.")
+
+        if "id_parte" in source:
+            id_parte = str(source["id_parte"] if not isinstance(source["id_parte"], bool) else "").strip()
+            if not id_parte.isdigit():
+                raise ValueError(f"id_parte inválido en la fuente {index}: {source['id_parte']!r}")
+            url_part = (parse_qs(parsed.query).get("idParte") or [id_parte])[0]
+            if url_part != id_parte:
+                raise ValueError(f"La URL de la fuente {index} no coincide con id_parte={id_parte}.")
 
     with_chapter = sum(1 for source in sources if "capitulo" in source)
     if with_chapter not in (0, len(sources)):

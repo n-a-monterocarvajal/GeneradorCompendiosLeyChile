@@ -8,7 +8,7 @@ from unittest import mock
 
 import requests
 
-from generador_compendios_leychile.generador import pin_export_version
+from generador_compendios_leychile.generador import pin_export_part, pin_export_version
 from generador_compendios_leychile.versiones import (
     _fingerprint,
     ReviewResult,
@@ -404,6 +404,16 @@ class CurrentVersionTests(unittest.TestCase):
         self.assertTrue(pinned.endswith("hddResultadoExportar=1007469.2026-10-16.0.0%23"))
         self.assertEqual(href, pin_export_version(href, None))
         self.assertEqual("https://otro", pin_export_version("https://otro", "2026-10-16"))
+
+    def test_pin_export_part(self):
+        href = ("https://nuevo.leychile.cl/servicios/Consulta/Exportar?radioExportar=Normas"
+                "&exportar_formato=pdf&hddResultadoExportar=172986.2025-08-28.0.0%23")
+        self.assertTrue(
+            pin_export_part(href, "8720755").endswith("hddResultadoExportar=172986.2025-08-28.8720755.0%23")
+        )
+        self.assertEqual(href, pin_export_part(href, None))
+        # Sin la forma esperada no se descarga la norma completa en lugar de la parte.
+        self.assertIsNone(pin_export_part("https://otro", "8720755"))
 
 
 if __name__ == "__main__":

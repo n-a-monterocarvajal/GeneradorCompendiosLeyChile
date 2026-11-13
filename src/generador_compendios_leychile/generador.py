@@ -11,7 +11,7 @@ import requests
 from playwright.sync_api import Browser, BrowserContext, Page, sync_playwright
 from pypdf import PdfReader, PdfWriter
 
-from .config import safe_name
+from .config import safe_name, source_url
 
 HEADERS = {
     "User-Agent": (
@@ -173,6 +173,7 @@ def click_sin_firma(page: Page, out_path: Path) -> bool:
 
 
 _EXPORT_VERSION = re.compile(r"(hddResultadoExportar=\d+\.)(\d{4}-\d{2}-\d{2})")
+_EXPORT_PART = re.compile(r"(hddResultadoExportar=\d+\.\d{4}-\d{2}-\d{2}\.)(\d+)(\.)")
 _ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
@@ -186,6 +187,21 @@ def pin_export_version(href: str, version: str | None, logger: Callable[[str], N
     if match.group(2) != version and logger is not None:
         logger(f"  La página ofrece la versión del {match.group(2)}; se descarga la vigente desde {version}.")
     return href[:match.start(2)] + version + href[match.end(2):]
+
+
+def pin_export_part(href: str, id_parte: str | None) -> str | None:
+    """Limita el enlace de exportación a una parte de la norma.
+
+    El enlace de Ley Chile identifica lo que exporta como ``idNorma.fecha.idParte.0``; con la
+    parte en ``0`` exporta la norma completa. Devuelve ``None`` si el enlace no tiene esa forma,
+    para no descargar la norma completa cuando se pidió solo una parte.
+    """
+    if not id_parte:
+        return href
+    match = _EXPORT_PART.search(href)
+    if match is None:
+        return None
+    return href[:match.start(2)] + str(id_parte) + href[match.end(2):]
 
 
 def current_version_for(
@@ -255,7 +271,8 @@ def download_bcn(
     logger: Callable[[str], None],
     version: str | None = None,
 ) -> None:
-    url = source.get("url") or f"https://www.bcn.cl/leychile/navegar?idNorma={source['id_norma']}"
+    url = source_url(source)
+    id_parte = str(source.get("id_parte") or "").strip() or None
     out_path.unlink(missing_ok=True)
     page = context.new_page()
     session: requests.Session | None = None
@@ -266,7 +283,9 @@ def download_bcn(
 
         session = session_from_context(context, url)
         for href in find_export_links(page):
-            href = pin_export_version(href, version, logger)
+            href = pin_export_part(pin_export_version(href, version, logger), id_parte)
+            if href is None:
+                continue
             logger(f"  Descargando enlace real expuesto por Ley Chile: {href}")
             if _download_export_link(session, href, out_path):
                 return
@@ -278,8 +297,14 @@ def download_bcn(
         session = session_from_context(context, url)
 
         for href in find_export_links(page):
-            if _download_export_link(session, pin_export_version(href, version, logger), out_path):
+            href = pin_export_part(pin_export_version(href, version, logger), id_parte)
+            if href is not None and _download_export_link(session, href, out_path):
                 return
+
+        if id_parte:
+            # Sin un enlace de exportación que acepte la parte, la descarga directa bajaría la
+            # norma completa.
+            raise RuntimeError(f"Ley Chile no ofreció un enlace para exportar solo la parte {id_parte}.")
 
         if version:
             logger(f"  Sin enlace de exportación para fijar la versión {version}; se descarga la versión por defecto.")
