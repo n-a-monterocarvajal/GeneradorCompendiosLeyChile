@@ -110,3 +110,7 @@ Esta decisión y las alternativas evaluadas se detallan en [analisis-trackerslis
 ## Consultas JSON desde el navegador
 
 Desde la versión 0.1.10, para robustecer el método de obtención, la revisión diaria y la consulta de la versión vigente en la generación piden los servicios JSON de Ley Chile a través de un contexto de Chromium (`SesionNavegador`), en lugar de un cliente HTTP aparte. Las fallas de red del navegador se traducen a las de `requests`, así que los reintentos y la clasificación `transitoria`/`formato` no cambian.
+
+## Fuentes limitadas a una parte de la norma
+
+Algunas leyes vigentes viven dentro de otra norma: la ley de herencias es el artículo 8 del DFL N.º 1, de 2000, de Justicia, que también fija el texto del Código Civil. Lo mismo pasa con las leyes modificatorias, cuyo contenido propio está en unos pocos artículos y en las disposiciones transitorias. Con `id_parte` (uno o una lista), el generador fija cada parte en el enlace de exportación de Ley Chile, descarga las partes por separado y las une en orden; la revisión compara la unión de las versiones de esas partes, no las de la norma completa. Si no hay enlace de exportación para la parte, la descarga falla: entregar la norma completa cambiaría en silencio el contenido del compendio.

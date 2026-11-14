@@ -10,6 +10,27 @@ from urllib.parse import parse_qs, urlparse
 ALLOWED_BCN_HOSTS = {"bcn.cl", "www.bcn.cl", "leychile.cl", "www.leychile.cl"}
 
 
+def source_parts(source: dict[str, Any]) -> list[str]:
+    """Partes de la norma que incluye la fuente, en orden; vacía si incluye la norma completa.
+
+    ``id_parte`` acepta un identificador o una lista de identificadores.
+    """
+    value = source.get("id_parte")
+    if value is None or isinstance(value, bool):
+        return []
+    values = value if isinstance(value, list) else [value]
+    return [str(item).strip() for item in values if not isinstance(item, bool) and str(item).strip()]
+
+
+def source_url(source: dict[str, Any]) -> str:
+    """URL de la norma en Ley Chile; con ``id_parte``, la de su primera parte."""
+    if source.get("url"):
+        return str(source["url"])
+    url = f"https://www.bcn.cl/leychile/navegar?idNorma={str(source.get('id_norma') or '').strip()}"
+    parts = source_parts(source)
+    return f"{url}&idParte={parts[0]}" if parts else url
+
+
 def safe_name(value: str) -> str:
     ascii_value = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
     return re.sub(r"[^a-zA-Z0-9_-]+", "_", ascii_value).strip("_") or "archivo"
@@ -77,13 +98,30 @@ def validate_config(config: dict[str, Any]) -> None:
                     closed_chapters.add(current_chapter)
                 current_chapter = chapter
 
-        url = str(source.get("url") or f"https://www.bcn.cl/leychile/navegar?idNorma={id_norma}")
+        url = source_url(source)
         parsed = urlparse(url)
         if parsed.scheme != "https" or parsed.hostname not in ALLOWED_BCN_HOSTS:
             raise ValueError(f"URL BCN inválida en la fuente {index}: {url}")
         url_id = (parse_qs(parsed.query).get("idNorma") or [""])[0]
         if url_id != id_norma:
             raise ValueError(f"La URL de la fuente {index} no coincide con id_norma={id_norma}.")
+
+        if "id_parte" in source:
+            raw = source["id_parte"]
+            items = raw if isinstance(raw, list) else [raw]
+            parts = source_parts(source)
+            if (
+                not items
+                or len(parts) != len(items)
+                or any(isinstance(item, bool) for item in items)
+                or not all(part.isdigit() for part in parts)
+            ):
+                raise ValueError(f"id_parte inválido en la fuente {index}: {raw!r}")
+            if len(set(parts)) != len(parts):
+                raise ValueError(f"id_parte repetido en la fuente {index}: {raw!r}")
+            url_part = (parse_qs(parsed.query).get("idParte") or [parts[0]])[0]
+            if url_part not in parts:
+                raise ValueError(f"La URL de la fuente {index} no coincide con id_parte={raw!r}.")
 
     with_chapter = sum(1 for source in sources if "capitulo" in source)
     if with_chapter not in (0, len(sources)):

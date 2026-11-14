@@ -13,6 +13,7 @@ from typing import Any, Callable
 
 import requests
 
+from .config import source_parts
 from .generador import HEADERS
 
 STATE_SCHEMA_VERSION = 1
@@ -27,6 +28,12 @@ JSON_URL = (
 VERSIONES_URL = (
     "https://nuevo.leychile.cl/servicios/Consulta/get_versiones"
     "?idNorma={id_norma}&formato=json&idParte=&idsParte="
+)
+# El mismo servicio, limitado a una parte de la norma (por ejemplo, un artículo que fija el
+# texto refundido de otra ley): solo lista las versiones en que cambió esa parte.
+PARTE_VERSIONES_URL = (
+    "https://nuevo.leychile.cl/servicios/Consulta/get_versiones"
+    "?idNorma={id_norma}&formato=json&idParte={id_parte}&idsParte="
 )
 ULTIMA_MODIFICATORIA_URL = (
     "https://nuevo.leychile.cl/servicios/Navegar/get_ultima_modificatoria"
@@ -165,6 +172,9 @@ _FINGERPRINT_KEYS = (
 
 def _fingerprint(snapshot: dict[str, Any]) -> str:
     stable = {key: snapshot.get(key) for key in _FINGERPRINT_KEYS}
+    if snapshot.get("id_parte"):
+        # Solo en las fuentes limitadas a una parte, para no alterar la huella de las demás.
+        stable["id_parte"] = snapshot["id_parte"]
     canonical = json.dumps(stable, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -185,6 +195,70 @@ def _effective_current(
         if version.get("desde") == indicated:
             return dict(version)
     return current
+
+
+_PART_VERSION_TYPES = {"texto original": "0", "intermedio": "1", "última versión": "2", "única": "3"}
+
+
+def parse_part_versions(payload: Any) -> list[dict[str, str]]:
+    """Versiones de una parte de la norma según ``get_versiones`` con ``idParte``."""
+    root = payload.get("Versiones") if isinstance(payload, dict) else None
+    if not isinstance(root, dict):
+        raise ValueError("Ley Chile respondió sin la lista de versiones de la parte.")
+    versions: list[dict[str, str]] = []
+    for item in _as_list(root.get("Version")):
+        if not isinstance(item, dict):
+            continue
+        description = _scalar(item.get("@tipoVersion"))
+        version = {
+            "desde": _iso_date(item.get("@vigenteDesde")),
+            "hasta": _iso_date(item.get("@vigenteHasta")),
+            "tipo": _PART_VERSION_TYPES.get(description.casefold(), ""),
+            "descripcion": description,
+        }
+        if version["desde"]:
+            versions.append(version)
+    if not versions:
+        raise ValueError("Ley Chile respondió sin versiones para la parte.")
+    versions.sort(key=lambda item: (item["desde"], item["hasta"], item["tipo"], item["descripcion"]))
+    return versions
+
+
+def _part_current(versions: list[dict[str, str]]) -> dict[str, str]:
+    return next((item for item in reversed(versions) if item["tipo"] in ("2", "3")), versions[-1])
+
+
+def apply_part_versions(
+    snapshot: dict[str, Any], versions_by_part: dict[str, list[dict[str, str]]]
+) -> dict[str, Any]:
+    """Sigue solo las versiones de las partes de la norma que incluye la fuente.
+
+    Una fuente puede ser un artículo de una norma mayor: la ley de herencias vigente es el
+    artículo 8 del DFL 1 de 2000 de Justicia, que también fija el texto del Código Civil. Si la
+    revisión comparara las versiones de la norma completa, cada cambio del Código Civil
+    publicaría un compendio con el mismo texto de herencias. Con varias partes, las vigencias
+    son la unión de las de cada parte y la vigencia actual es la más reciente de ellas.
+    """
+    versions: list[dict[str, str]] = []
+    for part_versions in versions_by_part.values():
+        for item in part_versions:
+            if item not in versions:
+                versions.append(dict(item))
+    versions.sort(key=lambda item: (item["desde"], item["hasta"], item["tipo"], item["descripcion"]))
+    current = max(
+        (_part_current(part_versions) for part_versions in versions_by_part.values()),
+        key=lambda item: item["desde"],
+    )
+    updated = dict(
+        snapshot,
+        id_parte=",".join(versions_by_part),
+        vigencias=versions,
+        vigencia_actual=dict(current),
+        # El aviso de versión no vigente se refiere a la norma completa.
+        version_vigente_indicada="",
+    )
+    updated["huella"] = _fingerprint(updated)
+    return updated
 
 
 def effective_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -330,6 +404,7 @@ def fetch_snapshot(
     marker: str,
     attempts: int = 3,
     base_wait: float = 2.0,
+    id_parte: str | list[str] = "",
 ) -> dict[str, Any]:
     referer = f"https://www.bcn.cl/leychile/navegar?idNorma={id_norma}"
     last_error: Exception | None = None
@@ -342,7 +417,22 @@ def fetch_snapshot(
             response.raise_for_status()
             payload = _parse_json(response)
             _validate_payload(payload)
-            return normalize_snapshot(id_norma, marker, payload)
+            snapshot = normalize_snapshot(id_norma, marker, payload)
+            parts = [str(part) for part in (id_parte if isinstance(id_parte, list) else [id_parte]) if str(part)]
+            if not parts:
+                return snapshot
+            versions_by_part: dict[str, list[dict[str, str]]] = {}
+            for part in parts:
+                response = session.get(
+                    PARTE_VERSIONES_URL.format(id_norma=id_norma, id_parte=part),
+                    headers={"Referer": referer},
+                    timeout=90,
+                )
+                if response.status_code == 429 or response.status_code >= 500:
+                    raise requests.HTTPError(f"Respuesta transitoria HTTP {response.status_code}", response=response)
+                response.raise_for_status()
+                versions_by_part[part] = parse_part_versions(_parse_json(response))
+            return apply_part_versions(snapshot, versions_by_part)
         except (requests.RequestException, ValueError, json.JSONDecodeError) as error:
             last_error = error
             if attempt < attempts:
@@ -363,7 +453,10 @@ def build_state(
         with SesionNavegador(id_norma_inicial=str(config["fuentes"][0]["id_norma"])) as session:
             sources = {
                 str(source["id_norma"]): fetch_snapshot(
-                    session, str(source["id_norma"]), str(source["marcador"])
+                    session,
+                    str(source["id_norma"]),
+                    str(source["marcador"]),
+                    id_parte=source_parts(source),
                 )
                 for source in config["fuentes"]
             }

@@ -61,6 +61,30 @@ Para agrupar las normas en el índice del PDF, cada fuente puede declarar un `ca
 
 Las normas seguidas de un mismo capítulo quedan como marcadores hijos de un marcador del capítulo, que apunta a la primera página de su primera norma. El campo es opcional, pero si una fuente lo declara todas deben hacerlo, y las normas de un capítulo deben ir seguidas. Sin `capitulo`, el índice sigue siendo plano: un marcador por norma.
 
+Una fuente puede limitarse a una parte de la norma con `id_parte`, el identificador de esa parte en Ley Chile (el `idParte` de la URL al navegar hasta ella). Sirve cuando una ley vigente es un artículo de otra norma, como la ley de herencias, que es el artículo 8 del DFL N.º 1, de 2000, de Justicia:
+
+```json
+{
+  "tipo": "bcn",
+  "id_norma": "172986",
+  "id_parte": "8720755",
+  "marcador": "Ley N.º 16.271, de impuesto a las herencias, asignaciones y donaciones (artículo 8 del DFL N.º 1, de 2000, de Justicia)."
+}
+```
+
+`id_parte` también acepta una lista, para incluir varias partes de una misma norma en ese orden, por ejemplo los artículos con contenido propio y las disposiciones transitorias de una ley modificatoria:
+
+```json
+{
+  "tipo": "bcn",
+  "id_norma": "1142667",
+  "id_parte": ["10103129", "10103236", "10103250"],
+  "marcador": "Ley N.º 21.210, que moderniza la legislación tributaria (artículos vigésimo tercero y trigésimo segundo, y disposiciones transitorias)."
+}
+```
+
+El generador descarga solo esas partes y las une en un PDF con un marcador por norma; la revisión de versiones sigue solo los cambios de esas partes, de modo que una modificación en otro lugar de la norma no publica un compendio nuevo. Si Ley Chile no ofrece el enlace para exportar las partes, la descarga falla en vez de traer la norma completa.
+
 Cada norma se descarga en la versión vigente que informa el servicio JSON de Ley Chile, que es la misma que compara la revisión de versiones. La página de una norma puede seguir ofreciendo por unas horas una versión que ya no está vigente; en ese caso el generador cambia la fecha del enlace de exportación y lo deja anotado en el log. Si esa consulta falla, descarga la versión que ofrece la página.
 
 ## Revisar versiones
