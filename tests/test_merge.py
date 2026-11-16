@@ -4,7 +4,7 @@ from pathlib import Path
 
 from pypdf import PdfReader, PdfWriter
 
-from generador_compendios_leychile.generador import merge
+from generador_compendios_leychile.generador import NOTA_SELECCION, merge, split_selection
 
 
 def blank_pdf(path: Path, pages: int) -> Path:
@@ -53,6 +53,36 @@ class MergeTests(unittest.TestCase):
             [("I", 0, [("A", 0, []), ("B", 2, [])]), ("II", 5, [("C", 5, [])])],
             outline_tree(reader),
         )
+
+    def test_selection_marks_norm_and_adds_note(self):
+        out = self.dir / "seleccion.pdf"
+        merge(
+            [("A.", self.a, "I"), ("Ley B, que crea algo. Selección: artículo 1 y disposiciones transitorias.", self.b, "I")],
+            out, "Prueba", lambda _: None,
+        )
+        reader = PdfReader(str(out))
+        self.assertEqual(
+            [
+                ("I", 0, [
+                    ("A.", 0, []),
+                    ("◐ Ley B, que crea algo.", 2, [("Selección: artículo 1 y disposiciones transitorias.", 2, [])]),
+                ]),
+                (NOTA_SELECCION, 0, []),
+            ],
+            outline_tree(reader),
+        )
+        selection_item = reader.outline[1][2][0]
+        self.assertEqual(1, selection_item.get("/F"))  # cursiva
+
+    def test_no_note_without_selection(self):
+        out = self.dir / "sin_seleccion.pdf"
+        merge([("A.", self.a), ("B.", self.b)], out, "Prueba", lambda _: None)
+        self.assertEqual([("A.", 0, []), ("B.", 2, [])], outline_tree(PdfReader(str(out))))
+
+    def test_split_selection(self):
+        self.assertEqual(("Ley X.", "arts. 1 y 2."), split_selection("Ley X. Selección: arts. 1 y 2."))
+        self.assertEqual(("Ley X.", None), split_selection("Ley X."))
+        self.assertEqual(("Ley X. Selección: ", None), split_selection("Ley X. Selección: "))
 
 
 if __name__ == "__main__":

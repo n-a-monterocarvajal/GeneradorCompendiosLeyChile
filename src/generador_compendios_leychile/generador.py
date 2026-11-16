@@ -395,6 +395,25 @@ def copy_outline(
     return copied
 
 
+SIMBOLO_SELECCION = "◐"
+SEPARADOR_SELECCION = " Selección: "
+NOTA_SELECCION = (
+    f"{SIMBOLO_SELECCION} Norma de la que el compendio incluye solo una selección de su articulado, "
+    "indicada bajo su título."
+)
+
+
+def split_selection(marker: str) -> tuple[str, str | None]:
+    """Separa el marcador «Norma …. Selección: …» en la norma y su selección.
+
+    Devuelve la selección sin el rótulo, o None si el marcador no declara una.
+    """
+    norm, separator, selection = marker.partition(SEPARADOR_SELECCION)
+    if not separator or not norm.strip() or not selection.strip():
+        return marker, None
+    return norm.strip(), selection.strip()
+
+
 def merge(
     parts: list[tuple[str, Path]] | list[tuple[str, Path, str | None]],
     out_path: Path,
@@ -405,11 +424,15 @@ def merge(
 
     Cada parte puede traer un capítulo; las normas seguidas de un mismo capítulo quedan como
     marcadores hijos de un marcador del capítulo, que apunta a la primera página de su primera norma.
+
+    Si el marcador declara «Selección: …», el marcador de la norma lleva el símbolo ◐ y la selección
+    queda como primer marcador hijo, en cursiva. Al final del índice, una nota explica el símbolo.
     """
     logger("\nUniendo documentos y creando marcadores...")
     writer = PdfWriter()
     chapter_name: str | None = None
     chapter_item = None
+    with_selection = False
     for part in parts:
         marker, path = part[0], part[1]
         chapter = part[2] if len(part) > 2 else None
@@ -424,12 +447,20 @@ def merge(
             chapter_name = chapter
             chapter_item = writer.add_outline_item(chapter, start_page)
             logger(f"  Capítulo: {chapter}")
-        parent = writer.add_outline_item(marker, start_page, parent=chapter_item)
+        norm, selection = split_selection(marker)
+        if selection is None:
+            parent = writer.add_outline_item(marker, start_page, parent=chapter_item)
+        else:
+            parent = writer.add_outline_item(f"{SIMBOLO_SELECCION} {norm}", start_page, parent=chapter_item)
+            writer.add_outline_item(f"Selección: {selection}", start_page, parent=parent, italic=True)
+            with_selection = True
         try:
             copied = copy_outline(reader, writer, reader.outline or [], parent, start_page, page_count)
             logger(f"  Marcador principal: {marker}; marcadores internos: {copied}")
         except Exception:
             logger(f"  Marcador principal: {marker}; marcadores internos omitidos por incompatibilidad")
+    if with_selection:
+        writer.add_outline_item(NOTA_SELECCION, 0, italic=True)
     writer.add_metadata({"/Title": title, "/Creator": "GeneradorCompendiosLeyChile"})
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("wb") as handle:
