@@ -79,9 +79,11 @@ Una fuente puede limitarse a una parte de la norma con `id_parte`, el identifica
   "tipo": "bcn",
   "id_norma": "1142667",
   "id_parte": ["10103129", "10103236", "10103250"],
-  "marcador": "Ley N.º 21.210, que moderniza la legislación tributaria (artículos vigésimo tercero y trigésimo segundo, y disposiciones transitorias)."
+  "marcador": "Ley N.º 21.210, que moderniza la legislación tributaria. Selección: artículo vigésimo tercero, artículo trigésimo segundo y disposiciones transitorias."
 }
 ```
+
+Si el marcador declara la selección con la forma «Ley N.º …, que …. Selección: …», el índice de marcadores del PDF la destaca: el marcador de la norma empieza con el símbolo «◐», la selección queda como primer marcador hijo, en cursiva, y al final del índice una nota en cursiva explica el símbolo. Las normas completas no llevan símbolo. Una fuente con `id_parte` que no declara «Selección:», como la ley de herencias, se muestra como norma completa.
 
 El generador descarga solo esas partes y las une en un PDF con un marcador por norma; la revisión de versiones sigue solo los cambios de esas partes, de modo que una modificación en otro lugar de la norma no publica un compendio nuevo. Si Ley Chile no ofrece el enlace para exportar las partes, la descarga falla en vez de traer la norma completa.
 

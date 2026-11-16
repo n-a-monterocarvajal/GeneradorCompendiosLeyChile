@@ -25,6 +25,8 @@ Los marcadores internos de un PDF de origen pueden apuntar a una página inexist
 
 Cuando las fuentes declaran `capitulo`, el marcador de cada norma cuelga del marcador de su capítulo. Exigir que el campo esté en todas las fuentes o en ninguna, y que un capítulo no reaparezca después de otro, evita índices con normas sueltas o capítulos partidos.
 
+Una norma de la que se incluye solo una selección de su articulado se reconoce por el texto «Selección: …» de su marcador, no por `id_parte`: una fuente puede usar `id_parte` para traer una norma completa que vive dentro de otra, como la Ley N.º 16.271 en el artículo 8 del DFL N.º 1, de 2000, de Justicia. El marcador de la norma lleva «◐», la selección va como marcador hijo en cursiva y una nota final explica el símbolo, de modo que el índice del PDF coincide con el del README de cada compendio.
+
 ## 4. Validación temprana de configuración
 
 Antes de abrir Chromium se comprueban tipos de fuente, unicidad de `id_norma` y nombres de archivo, dominios permitidos, concordancia entre URL e identificador y rangos de configuración. Un error estructural no se reintenta como si fuera una falla transitoria.
